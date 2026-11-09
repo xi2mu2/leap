@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设置界面 · 视觉方案预览</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: #eef1f5; color: #0f172a; padding: 28px;
+    display: flex; justify-content: center;
+  }
+  body.dark { background: #161616; color: #e5e7eb; }
+
+  /* ---- design tokens: light ---- */
+  .light {
+    --bg: #f8fafc;        /* dialog / canvas background */
+    --nav: #f1f5f9;       /* nav rail */
+    --card: #ffffff;      /* content card */
+    --bd: #e5e7eb;        /* hairline border */
+    --ctl: #ffffff;       /* control fill */
+    --ctlbd: #cbd5e1;     /* control border */
+    --tx: #0f172a;        /* primary text */
+    --body-tx: #334155;   /* label text */
+    --sec: #64748b;       /* secondary text */
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-soft: #eff6ff;
+    --nav-sel: #ffffff;
+    --nav-hover: #e2e8f0;
+    --on-accent: #ffffff;
+    --shadow: 0 18px 45px rgba(15, 23, 42, .16);
+  }
+  /* ---- design tokens: dark ---- */
+  .dark {
+    --bg: #1e1e1e;
+    --nav: #252526;
+    --card: #2a2a2b;
+    --bd: #3c3c3c;
+    --ctl: #323233;
+    --ctlbd: #4b5563;
+    --tx: #e5e7eb;
+    --body-tx: #d4d4d4;
+    --sec: #9ca3af;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --accent-soft: rgba(59, 130, 246, .14);
+    --nav-sel: #323233;
+    --nav-hover: #333333;
+    --on-accent: #0b1220;
+    --shadow: 0 18px 45px rgba(0, 0, 0, .55);
+  }
+
+  .stage { width: 880px; }
+  .stage-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; font-size: 13px; color: var(--sec);
+  }
+  .stage-head b { font-size: 14px; color: var(--tx); font-weight: 600; }
+  .theme-switch {
+    display: flex; gap: 2px; padding: 3px;
+    background: var(--nav); border: 1px solid var(--bd); border-radius: 8px;
+  }
+  .theme-switch button {
+    height: 26px; padding: 0 12px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--sec); font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  .theme-switch button.on {
+    background: var(--card); color: var(--accent); font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .10);
+  }
+
+  /* ---- window chrome ---- */
+  .window {
+    height: 580px; border-radius: 10px; overflow: hidden;
+    background: var(--bg); border: 1px solid var(--bd); box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+  }
+  .titlebar {
+    height: 32px; flex: none; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 6px 0 14px; background: var(--card); border-bottom: 1px solid var(--bd);
+    font-size: 12px; color: var(--sec);
+  }
+  .winbtns { display: flex; }
+  .winbtns span {
+    width: 38px; height: 30px; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: var(--sec);
+  }
+  .winbtns span.close:hover { background: #e81123; color: #fff; }
+
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  /* ---- nav rail ---- */
+  nav {
+    width: 168px; flex: none; padding: 12px 10px;
+    background: var(--nav); border-right: 1px solid var(--bd);
+    display: flex; flex-direction: column;
+  }
+  .navitem {
+    height: 40px; display: flex; align-items: center;
+    padding: 0 12px; border-radius: 8px; font-size: 15px; color: var(--body-tx);
+    cursor: default;
+  }
+  .navitem:hover { background: var(--nav-hover); }
+  .navitem.active {
+    background: var(--nav-sel); color: var(--accent); font-weight: 600;
+    box-shadow: inset 3px 0 0 0 var(--accent);
+  }
+  .spacer { flex: 1; }
+  .navfoot {
+    height: 34px; display: flex; align-items: center; padding: 0 12px;
+    font-size: 13px; color: var(--sec); border-radius: 6px; cursor: default;
+  }
+  .navfoot:hover { background: var(--nav-hover); }
+
+  /* ---- content ---- */
+  main {
+    flex: 1; min-width: 0; padding: 18px 22px 16px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .header h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--tx); }
+  .header p { margin: 5px 0 0; font-size: 13px; color: var(--sec); }
+  .scope { display: flex; gap: 2px; padding: 3px; background: var(--nav); border-radius: 8px; flex: none; }
+  .scope button {
+    height: 28px; padding: 0 11px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--sec); font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .scope button.on {
+    background: var(--card); color: var(--accent); font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+  }
+
+  .cols { flex: 1; display: flex; gap: 16px; min-height: 0; }
+  .formcol { flex: 1; min-width: 344px; display: flex; flex-direction: column; gap: 14px; }
+  .fnote {
+    margin: auto 0 0; font-size: 12px; line-height: 1.65; color: var(--sec);
+    max-width: 340px;
+  }
+
+  /* ---- groups ---- */
+  .group {
+    border: 1px solid var(--bd); border-radius: 10px; background: var(--card);
+    padding: 12px 16px 14px;
+  }
+  .gtitle {
+    font-size: 12px; font-weight: 600; letter-spacing: .06em; color: var(--sec);
+    margin: 0 0 8px;
+  }
+  .row {
+    display: grid; grid-template-columns: 78px 1fr;
+    align-items: center; gap: 12px; min-height: 40px;
+  }
+  .row > label { font-size: 15px; color: var(--body-tx); }
+  .ctl {
+    height: 32px; display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 0 10px; border: 1px solid var(--ctlbd); border-radius: 6px;
+    background: var(--ctl); color: var(--tx); font-size: 14px;
+  }
+  .ctl .caret { color: var(--sec); font-size: 10px; }
+  .ctl.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; }
+
+  .seg4 { display: flex; height: 32px; border: 1px solid var(--ctlbd); border-radius: 6px; overflow: hidden; background: var(--ctl); }
+  .seg4 button {
+    flex: 1; border: 0; border-right: 1px solid var(--ctlbd); background: transparent;
+    color: var(--body-tx); font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .seg4 button:last-child { border-right: 0; }
+  .seg4 button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+  .colorctl { display: flex; align-items: center; gap: 9px; }
+  .swatch {
+    width: 18px; height: 18px; border-radius: 4px; flex: none;
+    border: 1px solid rgba(0, 0, 0, .18);
+  }
+
+  /* ---- preview panel ---- */
+  .preview {
+    width: 284px; flex: none; border: 1px solid var(--bd); border-radius: 10px;
+    background: var(--bg); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .phead {
+    height: 34px; flex: none; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px; border-bottom: 1px solid var(--bd); background: var(--card);
+    font-size: 12px; letter-spacing: .06em; color: var(--sec);
+  }
+  .phead em { font-style: normal; letter-spacing: 0; color: var(--accent); font-weight: 600; }
+  .canvas { position: relative; flex: 1; padding: 20px 16px; }
+  .nrow { position: relative; margin-bottom: 26px; }
+  .nrow:last-child { margin-bottom: 0; }
+  .nrow.child::before {
+    content: ''; position: absolute; left: 26px; top: -26px;
+    height: calc(100% + 26px); width: 2px; background: var(--ctlbd); opacity: .7;
+  }
+  .nrow.deep::before {
+    content: ''; position: absolute; left: 26px; top: -26px;
+    height: calc(50% + 26px); width: 2px; background: var(--ctlbd); opacity: .7;
+  }
+  .nrow .stub {
+    position: absolute; left: 26px; top: 50%; width: 22px; height: 2px;
+    background: var(--ctlbd); opacity: .7;
+  }
+  .nrow.child { padding-left: 48px; }
+  .nrow.deep  { padding-left: 72px; }
+  .node {
+    display: flex; align-items: center;
+    border: 4px solid #d3eafd; background: #d3eafd; color: #053860;
+    border-radius: 8px; font-weight: 600; line-height: 1.45;
+  }
+  .node.root  { height: 48px; padding: 0 16px; font-size: 15px; }
+  .node.child { min-height: 44px; padding: 6px 12px; font-size: 13px; font-weight: 500; }
+  .node.deep  { height: 38px; padding: 0 12px; font-size: 12px; font-weight: 500; }
+  .node.active { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .ptag {
+    position: absolute; left: 26px; top: 50%; transform: translateY(-50%);
+    font-size: 10px; color: var(--sec);
+  }
+
+  /* ---- footer ---- */
+  footer {
+    height: 60px; flex: none; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; background: var(--card); border-top: 1px solid var(--bd);
+  }
+  .btn {
+    height: 36px; padding: 0 18px; border-radius: 6px; font-size: 14px; cursor: pointer;
+    border: 1px solid var(--ctlbd); background: var(--ctl); color: var(--tx); font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary {
+    background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+    font-weight: 600; min-width: 96px;
+  }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--sec); padding: 0 8px; }
+  .btn.ghost:hover { background: var(--nav); color: var(--tx); }
+  .foot-right { display: flex; gap: 10px; }
+
+  .caption { margin-top: 12px; font-size: 12px; color: var(--sec); }
+</style>
+</head>
+<body class="light">
+<div class="stage">
+  <div class="stage-head">
+    <div><b>设置界面 · 视觉方案预览</b> &nbsp;880 × 580 · 浅色 / 深色</div>
+    <div class="theme-switch">
+      <button class="on" data-theme="light">浅色</button>
+      <button data-theme="dark">深色</button>
+    </div>
+  </div>
+
+  <div class="window">
+    <div class="titlebar">
+      <span>设置</span>
+      <div class="winbtns"><span>—</span><span>▢</span><span class="close">✕</span></div>
+    </div>
+
+    <div class="body">
+      <nav>
+        <div class="navitem active">字体</div>
+        <div class="navitem">段落</div>
+        <div class="navitem">节点</div>
+        <div class="navitem">主题</div>
+        <div class="navitem">操作</div>
+        <div class="spacer"></div>
+      </nav>
+
+      <main>
+        <div class="header">
+          <div>
+            <h1>字体</h1>
+            <p>设置该层级节点的字体、字号与颜色</p>
+          </div>
+          <div class="scope">
+            <button class="on">根节点</button>
+            <button>1 级</button>
+            <button>2 级+</button>
+          </div>
+        </div>
+
+        <div class="cols">
+          <div class="formcol">
+            <div class="group">
+              <p class="gtitle">文字</p>
+              <div class="row">
+                <label>字体</label>
+                <div class="ctl">微软雅黑 <span class="caret">▼</span></div>
+              </div>
+              <div class="row">
+                <label>字号</label>
+                <div class="ctl">14 pt <span class="caret" style="visibility:hidden">▼</span></div>
+              </div>
+              <div class="row">
+                <label>字体颜色</label>
+                <div class="ctl colorctl">
+                  <span class="swatch" style="background:#053860"></span>
+                  <span class="mono" style="font-family:Consolas,monospace;font-size:13px">#053860</span>
+                  <span class="caret" style="margin-left:auto">▼</span>
+                </div>
+              </div>
+              <div class="row">
+                <label>对齐</label>
+                <div class="seg4">
+                  <button class="on">左</button>
+                  <button>中</button>
+                  <button>右</button>
+                  <button>两端</button>
+                </div>
+              </div>
+              <div class="row">
+                <label>行距</label>
+                <div class="ctl">1.00 倍 <span class="caret" style="visibility:hidden">▼</span></div>
+              </div>
+            </div>
+
+            <p class="fnote">修改会即时反映在右侧预览中；点击「取消」不会保存本次修改。</p>
+          </div>
+
+          <div class="preview">
+            <div class="phead"><span>预览</span><em>根节点</em></div>
+            <div class="canvas">
+              <div class="spine"></div>
+              <div class="nrow">
+                <div class="node root active">中心主题</div>
+              </div>
+              <div class="nrow child">
+                <div class="stub"></div>
+                <div class="node child">子节点：多行文本用于观察<br>行距与对齐效果</div>
+              </div>
+              <div class="nrow deep">
+                <div class="stub"></div>
+                <div class="node deep">更深层节点</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer>
+      <button class="btn ghost">恢复此层级默认值</button>
+      <div class="foot-right">
+        <button class="btn">取消</button>
+        <button class="btn primary">确定</button>
+      </div>
+    </footer>
+  </div>
+
+  <p class="caption">静态 HTML 方案稿，用于确认布局、层级与配色；最终由 Qt Widgets + QSS 实现。</p>
+</div>
+
+<script>
+  const body = document.body;
+  const switches = document.querySelectorAll('.theme-switch button');
+  function setTheme(name) {
+    switches.forEach(b => b.classList.toggle('on', b.dataset.theme === name));
+    body.classList.toggle('dark', name === 'dark');
+    body.classList.toggle('light', name !== 'dark');
+  }
+  switches.forEach(btn => { btn.onclick = () => setTheme(btn.dataset.theme); });
+  if (location.hash === '#dark') setTheme('dark');
+</script>
+</body>
+</html>

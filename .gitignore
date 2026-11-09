@@ -1,0 +1,33 @@
+# 构建产物
+build/
+build-*/
+out/
+dist/
+leap-portable/
+*.zip
+*.o
+*.obj
+*.exe
+*.dll
+
+# Qt Creator / IDE
+*.user
+CMakeLists.txt.user*
+.qtcreator/
+.vs/
+.vscode/
+
+# 本地临时文件
+.tmp_probe/
+*.bak
+Thumbs.db
+.DS_Store
+
+# 不公开：开发笔记、调试截图、设计草案、AI 工具配置
+timer_diary/
+bug/
+plan5.txt
+plan6.txt
+png/
+.agents/
+skills-lock.json
