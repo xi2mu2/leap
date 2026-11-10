@@ -17,12 +17,18 @@
 - 主页：https://github.com/jkriege2/JKQtPlotter
 - 这两个目录中的源文件保留其原始许可证声明，不适用本项目的 GPL-3.0。
 
-> 注意：本仓库将上述两个库的源文件直接编译进可执行文件（静态链接）。
-> 根据 LGPL-2.1 第 6 条，分发二进制时需要提供让用户能够重新链接的目标文件（.o），
-> 或改为动态链接。发布二进制前请确认此项。
+> 说明：本仓库将上述两个库的源文件直接编译进可执行文件（静态链接）。
+> 由于本项目以完整源代码（含构建脚本）的形式发布，接收者可以修改或替换这两个库后重新编译链接，
+> 以此满足 LGPL-2.1 第 6 条关于"可重新链接"的要求。各源文件头部保留了原始的 LGPL 声明。
 
 ## Fira Math
 
 - 位置：`libs/jkqtmathtext/resources/firaMath`
 - 许可证：SIL Open Font License 1.1
 - 许可证全文见该目录下的 `LICENSE` 文件。
+
+## XITS 字体
+
+- 位置：`libs/jkqtmathtext/resources/xits`
+- 许可证：SIL Open Font License 1.1
+- 许可证全文见该目录下的 `OFL.txt` 文件。

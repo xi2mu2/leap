@@ -14,7 +14,12 @@
 
 ## 下载
 
-前往 [Releases](../../releases) 页面下载最新版本。
+前往 [Releases](../../releases) 页面下载最新版本（当前 v2.14.10）：
+
+- **安装版**：`leap-2.14.10-setup.exe`（约 18 MB）—— 双击安装，无需管理员权限，安装路径可改，可选创建桌面快捷方式，可在「应用和功能」中正常卸载；
+- **免安装版**：`leap-v2.14.10-win64.zip`（约 23 MB）—— 解压后直接运行 `leap.exe`，适合放 U 盘随身携带。
+
+系统要求：Windows 10 / 11 64 位。
 
 ## 从源码构建
 
@@ -33,6 +38,18 @@ cd leap
 cmake -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.5.3/mingw_64"
 cmake --build build --config Release
 ```
+
+### 打包发布
+
+根目录的 `build_release.bat` 会完成整套发布流程：编译 → 部署 Qt 运行时 → 预渲染公式对照表 → 生成免安装 zip → 调用 [Inno Setup](https://jrsoftware.org/isinfo.php) 生成安装包。需要先安装 Inno Setup 6（`winget install JRSoftware.InnoSetup`），安装脚本位于 `installer/leap.iss`。
+
+```bat
+build_release.bat
+```
+
+产物在 `release/` 目录下：`leap-v<版本>-win64/`（免安装目录）、`.zip` 压缩包、`leap-<版本>-setup.exe` 安装包。
+
+> 发版时记得同步三处版本号：`leap.rc`、`MainWindow.cpp` 中的 `APP_VERSION`、`MindMapIO.cpp` 中的 `WATERMARK_VERSION`，以及 `build_release.bat` 与 `installer/leap.iss` 里的版本号。
 
 ## 许可证
 

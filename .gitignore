@@ -3,6 +3,7 @@ build/
 build-*/
 out/
 dist/
+release/
 leap-portable/
 *.zip
 *.o
@@ -19,6 +20,7 @@ CMakeLists.txt.user*
 
 # 本地临时文件
 .tmp_probe/
+.tmp_*/
 *.bak
 Thumbs.db
 .DS_Store

@@ -22,6 +22,8 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QLineF>
+#include <QGraphicsView>
+#include <QScrollBar>
 
 // ==================== MindMapTextItem ====================
 
@@ -522,6 +524,16 @@ void TextBlock::setEditing(bool editing) {
         m_textItem->setCursor(Qt::IBeamCursor);
         m_textItem->setFocus();
     } else {
+        // 结束编辑时文本项会失焦，QGraphicsView 会把视图滚动到该项。若正在编辑的
+        // 节点已在视野之外（用户先滚走了再点空白/点其它节点），这一下被动滚屏就
+        // 表现为「视野跳变」。这里在结束编辑前后保存并恢复滚动位置。
+        QVector<QPair<QGraphicsView*, QPoint>> savedScroll;
+        if (QGraphicsScene* itemScene = m_textItem->scene()) {
+            for (QGraphicsView* v : itemScene->views()) {
+                savedScroll.append({v, QPoint(v->horizontalScrollBar()->value(),
+                                              v->verticalScrollBar()->value())});
+            }
+        }
         QTextCursor cursor = m_textItem->textCursor();
         cursor.clearSelection();
         m_textItem->setTextCursor(cursor);
@@ -529,6 +541,10 @@ void TextBlock::setEditing(bool editing) {
         m_textItem->setAcceptedMouseButtons(Qt::NoButton);
         m_textItem->clearFocus();
         m_textItem->unsetCursor();
+        for (const auto& entry : savedScroll) {
+            entry.first->horizontalScrollBar()->setValue(entry.second.x());
+            entry.first->verticalScrollBar()->setValue(entry.second.y());
+        }
     }
 }
 

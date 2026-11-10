@@ -113,7 +113,8 @@ MindMapView::MindMapView(QGraphicsScene* scene, QWidget* parent)
     )";
     setStyleSheet(scrollBarStyle);
 
-    scale(0.8, 0.8);
+    // 新建/打开文档时的默认视野缩放（新用户第一眼看到的比例）。
+    scale(0.7, 0.7);
 
     m_miniMap = new MindMapMiniMap(this);
     updateMiniMapGeometry();

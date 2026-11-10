@@ -460,7 +460,7 @@ QWidget* MindMapSettingsDialog::buildNodePage() {
     m_textLineWidth = new QSpinBox(page);
     m_textLineWidth->setRange(54, 794);
     m_textLineWidth->setSuffix(QStringLiteral(" px"));
-    m_textLineWidth->setValue(QSettings().value(QStringLiteral("textLineWidth"), 200).toInt());
+    m_textLineWidth->setValue(QSettings().value(QStringLiteral("textLineWidth"), kDefaultTextLineWidth).toInt());
     addFormRow(layoutGrid, 0, QStringLiteral("文本行宽度"), m_textLineWidth,
                QStringLiteral("节点文本超过该宽度后自动换行。"));
     layout->addWidget(layoutCard);
@@ -668,6 +668,12 @@ void MindMapSettingsDialog::loadCurrentStyle() {
     m_updating = true;
     const auto& style = currentStyle();
 
+    // 颜色选择器里的“默认色”跟随当前层级的默认样式，切换层级时保持一致。
+    const MindMapStyle levelDefault = MindMapLevelStyles::defaultFor(levelKey());
+    m_textColor->setDefaultColor(levelDefault.textColor);
+    m_fillColor->setDefaultColor(levelDefault.fillColor);
+    m_borderColor->setDefaultColor(levelDefault.effectiveBorderColor());
+
     QFont font(style.fontFamily);
     m_fontCombo->setCurrentFont(font);
     m_fontSize->setValue(style.fontPointSize);
@@ -728,7 +734,7 @@ void MindMapSettingsDialog::refreshLevelChrome(int pageIndex) {
 }
 
 void MindMapSettingsDialog::restoreLevelDefaults() {
-    currentStyle() = MindMapStyle{};
+    currentStyle() = MindMapLevelStyles::defaultFor(levelKey());
     loadCurrentStyle();
 }
 
@@ -743,7 +749,7 @@ void MindMapSettingsDialog::applyChanges() {
 
     bool textLineWidthChanged = false;
     if (m_textLineWidth) {
-        const int previousWidth = settings.value(QStringLiteral("textLineWidth"), 200).toInt();
+        const int previousWidth = settings.value(QStringLiteral("textLineWidth"), kDefaultTextLineWidth).toInt();
         const int nextWidth = m_textLineWidth->value();
         if (previousWidth != nextWidth) {
             settings.setValue(QStringLiteral("textLineWidth"), nextWidth);

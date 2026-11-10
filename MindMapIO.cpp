@@ -33,7 +33,7 @@ static int countNodes(const QJsonObject& obj) {
 
 static const QString WATERMARK_AUTHOR = QStringLiteral("刘羽林");
 static const QString WATERMARK_APP = QStringLiteral("leap");
-static const QString WATERMARK_VERSION = QStringLiteral("v1.20");
+static const QString WATERMARK_VERSION = QStringLiteral("v2.14.10");
 
 static QString imageToBase64(const QImage& image) {
     PerformanceMetrics::ScopedTimer timer(PerformanceMetrics::Stage::SaveImageEncode);
@@ -136,7 +136,7 @@ QJsonObject MindMapIO::serialize(MindMapNode* root, const QString& idPrefix) {
 
     // 水印
     if (idPrefix == QStringLiteral("1")) {
-        QString copyright = QString("Created by %1 with %2 v%3")
+        QString copyright = QString("Created by %1 with %2 %3")
             .arg(WATERMARK_AUTHOR, WATERMARK_APP, WATERMARK_VERSION);
         QString timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         QByteArray payload = (copyright + timestamp).toUtf8();

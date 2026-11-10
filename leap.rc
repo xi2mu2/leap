@@ -1,1 +1,41 @@
+// leap 思维导图的 Windows 资源文件
+// 图标 + 可执行文件版本信息（在资源管理器中右键 leap.exe → 属性 → 详细信息可见）
+// 文件须以 UTF-8 保存，windres / rc.exe 通过 code_page(65001) 读取中文
+// 注意：下面的版本号需与 MainWindow.cpp 中的 APP_VERSION、MindMapIO.cpp 中的
+//       WATERMARK_VERSION 保持一致（当前 2.14.10）
+
+#pragma code_page(65001)
+
 IDI_ICON1 ICON DISCARDABLE "leap.ico"
+
+1 VERSIONINFO
+ FILEVERSION 2,14,10,0
+ PRODUCTVERSION 2,14,10,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 简体中文（0x0804）+ Unicode（1200）
+        // 注：windres 的 VarFileInfo 只接受一个 Translation 对，
+        //     因此这里只保留中文块；非中文系统会自动回退读取该块。
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "刘羽林"
+            VALUE "FileDescription", "leap"
+            VALUE "FileVersion", "2.14.10"
+            VALUE "InternalName", "leap"
+            VALUE "LegalCopyright", "Copyright (C) 刘羽林  |  GNU GPL v3.0"
+            VALUE "OriginalFilename", "leap.exe"
+            VALUE "ProductName", "leap"
+            VALUE "ProductVersion", "2.14.10"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

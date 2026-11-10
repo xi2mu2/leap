@@ -9,9 +9,14 @@ enum class MindMapNodeShape {
     Rect
 };
 
+// 文本行宽度（px）：QSettings 键 textLineWidth 的缺省值，节点折行与设置对话框共用。
+inline constexpr int kDefaultTextLineWidth = 350;
+
 struct MindMapStyle {
-    QString fontFamily = QStringLiteral("SimSun");
-    int fontPointSize = 14;
+    // 新建文档的默认层级样式见 MindMapLevelStyles；这里是与之外层（更深层节点）一致的基础样式，
+    // 同时充当旧文件缺字段时的兜底值。
+    QString fontFamily = QStringLiteral("Microsoft YaHei");
+    int fontPointSize = 16;
     QColor textColor = QColor(5, 56, 96);
     Qt::Alignment alignment = Qt::AlignLeft;
     qreal lineSpacing = 1.0;
@@ -20,6 +25,18 @@ struct MindMapStyle {
     bool borderFollowsFill = true;
     int borderWidth = 4;
     MindMapNodeShape shape = MindMapNodeShape::RoundedRect;
+
+    // 组装一个完整的层级样式：字体、字号、字色、填充，边框默认跟随填充。
+    static MindMapStyle make(const QString& family, int pointSize, const QColor& text, const QColor& fill) {
+        MindMapStyle s;
+        s.fontFamily = family;
+        s.fontPointSize = pointSize;
+        s.textColor = text;
+        s.fillColor = fill;
+        s.borderColor = fill;
+        s.borderFollowsFill = true;
+        return s;
+    }
 
     QColor effectiveBorderColor() const { return borderFollowsFill ? fillColor : borderColor; }
 
@@ -59,9 +76,22 @@ struct MindMapStyle {
 };
 
 struct MindMapLevelStyles {
-    MindMapStyle root;
-    MindMapStyle firstChild;
-    MindMapStyle deeper;
+    // 新建文档的默认外观：根节点深蓝底白字、1 级稍亮的蓝底白字、2 级浅蓝底深蓝字。
+    MindMapStyle root =
+        MindMapStyle::make(QStringLiteral("Microsoft YaHei"), 25, QColor(0xFF, 0xFF, 0xFF), QColor(0x00, 0x00, 0x7F));
+    MindMapStyle firstChild =
+        MindMapStyle::make(QStringLiteral("Microsoft YaHei"), 20, QColor(0xFF, 0xFF, 0xFF), QColor(0x00, 0x00, 0xAB));
+    MindMapStyle deeper = MindMapStyle::make(QStringLiteral("Microsoft YaHei"), 16, QColor(0x05, 0x38, 0x60),
+                                             QColor(0xD3, 0xEA, 0xFD));
+
+    // 按层级 key（root / firstChild / deeper）取默认样式，供设置对话框的“恢复默认”使用。
+    static MindMapStyle defaultFor(const QString& key) {
+        const MindMapLevelStyles defaults;
+        if (key == QLatin1String("firstChild")) return defaults.firstChild;
+        if (key == QLatin1String("deeper")) return defaults.deeper;
+        return defaults.root;
+    }
+
     QJsonObject toJson() const {
         QJsonObject o;
         o[QStringLiteral("root")] = root.toJson();

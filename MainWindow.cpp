@@ -85,7 +85,7 @@ static const QString AUTHOR_NAME = QString("刘羽林");
 static const QString AUTHOR_EMAIL = QString("1022645285@qq.com");
 static const QString AUTHOR_URL = QString("https://github.com/xi2mu2/leap");
 static const QString ORG_NAME = QString("刘羽林");
-static const QString APP_VERSION = QString("v1.20");
+static const QString APP_VERSION = QString("v2.14.10");
 static const QString RECENT_FILES_KEY = QString("recentFiles");
 static const int MAX_RECENT_FILES = 10;
 static const int AUTO_BACKUP_INTERVAL_MS = 120000;
@@ -139,7 +139,7 @@ static QString buildAboutText() {
         urlLine = QString("<p><b>项目主页：</b>%1</p>").arg(AUTHOR_URL);
     }
     return QString(
-               "<h2>leap 思维导图 v%1</h2>"
+               "<h2>leap 思维导图 %1</h2>"
                "<p>一个简洁、高效的思维导图工具</p>"
                "<hr>"
                "<p><b>作者：</b>%2</p>"
@@ -526,7 +526,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_arrangeShortcut, &QShortcut::activated, this, &MainWindow::onArrange);
 
     // 【优化】创建缩放指示器（右下角浮动）
-    m_zoomLabel = new QLabel("80%", this);
+    m_zoomLabel = new QLabel("70%", this);
     m_zoomLabel->setAlignment(Qt::AlignCenter);
     m_zoomLabel->setStyleSheet(
         "QLabel {"
@@ -1696,18 +1696,12 @@ void MainWindow::onHelp() {
     buttons->addWidget(closeButton);
     auto* helpText = new QLabel(QStringLiteral(
         "<b>快捷键说明</b><br><br>"
-        "<b>Enter</b> - 添加同级节点<br>"
-        "<b>Tab</b> - 添加子节点<br>"
-        "<b>双击 / 空格</b> - 编辑节点<br>"
-        "<b>Shift+Enter</b> - 在光标处拆分文本块<br>"
-        "<b>Delete / Backspace</b> - 删除节点/选中块<br>"
-        "<b>方向键</b> - 节点导航<br>"
-        "<b>Ctrl+S / Ctrl+Shift+S</b> - 保存 / 另存为<br>"
-        "<b>Ctrl+O / Ctrl+N</b> - 打开 / 新建<br>"
-        "<b>Ctrl+Z / Ctrl+Y</b> - 撤销 / 恢复<br>"
-        "<b>Ctrl+C / X / V</b> - 复制 / 剪切 / 粘贴节点<br>"
-        "<b>Ctrl+B</b> - 加粗<br><b>Ctrl+I</b> - 斜体<br>"
-        "<b>Esc</b> - 退出编辑 / 退出程序"), &dialog);
+        "<b>空格 / 双击</b> - 编辑节点<br>"
+        "<b>Enter</b> - 添加同级节点 / 退出编辑 <br>"
+        "<b>Tab</b> - 添加子节点 / 退出编辑<br>"
+        "<b>Shift+Enter</b> - 换行<br>"
+        "<b>Delete / Backspace</b> - 删除节点<br>"
+        "<b>Ctrl+S</b> - 保存 <br>"), &dialog);
     helpText->setWordWrap(true);
     layout->addWidget(helpText);
     layout->addLayout(buttons);
@@ -1716,24 +1710,6 @@ void MainWindow::onHelp() {
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     dialog.exec();
     if (replay) QTimer::singleShot(0, this, &MainWindow::startNewUserGuide);
-    return;
-    QMessageBox::information(this, QString("帮助"),
-                             QString(
-                                 "<b>快捷键说明</b><br><br>"
-                                 "<b>Enter</b> - 添加同级节点<br>"
-                                 "<b>Tab</b> - 添加子节点<br>"
-                                 "<b>双击 / 空格</b> - 编辑节点<br>"
-                                 "<b>Shift+Enter</b> - 在光标处拆分文本块<br>"
-                                 "<b>Delete / Backspace</b> - 删除节点/选中块<br>"
-                                 "<b>方向键</b> - 节点导航<br>"
-                                 "<b>Ctrl+S / Ctrl+Shift+S</b> - 保存 / 另存为<br>"
-                                 "<b>Ctrl+O / Ctrl+N</b> - 打开 / 新建<br>"
-                                 "<b>Ctrl+Z / Ctrl+Y</b> - 撤销 / 恢复<br>"
-                                 "<b>Ctrl+C / X / V</b> - 复制 / 剪切 / 粘贴节点<br>"
-                                 "<b>Ctrl+B</b> - 加粗<br>"
-                                 "<b>Ctrl+I</b> - 斜体<br>"
-                                 "<b>Esc</b> - 退出编辑 / 退出程序"
-                                 ));
 }
 
 void MainWindow::startNewUserGuide() { if (m_newUserGuide) m_newUserGuide->start(); }
@@ -1957,8 +1933,8 @@ void MainWindow::onExportSvg() {
     generator.setFileName(filePath);
     generator.setSize(QSize(qCeil(itemsRect.width()), qCeil(itemsRect.height())));
     generator.setViewBox(QRectF(0, 0, itemsRect.width(), itemsRect.height()));
-    generator.setTitle(QString("MindMap Export"));
-    generator.setDescription(QString("Exported from leap v%1 by %2").arg(APP_VERSION, AUTHOR_NAME));
+    generator.setTitle(QString("leap 思维导图"));
+    generator.setDescription(QString("Exported from leap %1 by %2").arg(APP_VERSION, AUTHOR_NAME));
     QPainter painter(&generator);
     painter.setRenderHint(QPainter::Antialiasing);
     m_scene->render(&painter, QRectF(), itemsRect);
