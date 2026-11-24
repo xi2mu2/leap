@@ -32,9 +32,106 @@
 #include <QResizeEvent>
 #include <QPen>
 #include <QTimer>
+#include <QDebug>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QTextStream>
+#include <QVector>
 #include <limits>
 
 static QJsonArray s_multiClipboardData;
+
+namespace {
+
+// LEAP_FRAME_LOG=<path> 时记录每一帧（paintEvent）的时间戳，退出时落盘为 CSV。
+// 值为 "1" 时写到系统临时目录的 leap_frames.csv。默认不启用，零开销。
+struct FrameLog {
+    bool active = false;
+    bool written = false;
+    QString path;
+    QElapsedTimer clock;
+    QVector<qint64> endNs;
+    QVector<qint64> paintNs;
+    QVector<qint64> inputLatencyNs;  // -1 表示该帧之前没有待处理的输入
+    qint64 pendingInputNs = -1;
+
+    void init(const QString& configured) {
+        path = (configured == QLatin1String("1"))
+                   ? QDir(QDir::tempPath()).filePath(QStringLiteral("leap_frames.csv"))
+                   : configured;
+        endNs.reserve(200000);
+        paintNs.reserve(200000);
+        inputLatencyNs.reserve(200000);
+        clock.start();
+        active = true;
+        qInfo().noquote() << "[leap-frame-log] recording to" << path;
+    }
+
+    // 记录"最早一个还没被画出来回应"的输入时刻，用于算 输入->出帧 的延迟。
+    void noteInput() {
+        if (active && pendingInputNs < 0) {
+            pendingInputNs = clock.nsecsElapsed();
+        }
+    }
+
+    void addFrame(qint64 startNs) {
+        const qint64 now = clock.nsecsElapsed();
+        endNs.append(now);
+        paintNs.append(now - startNs);
+        inputLatencyNs.append(pendingInputNs >= 0 ? (now - pendingInputNs) : -1);
+        pendingInputNs = -1;
+    }
+
+    void flush() {
+        if (!active || written) return;
+        written = true;
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning().noquote() << "[leap-frame-log] cannot write" << path;
+            return;
+        }
+        QTextStream out(&f);
+        out << "frame,time_ms,delta_ms,paint_ms,input_latency_ms\n";
+        for (int i = 0; i < endNs.size(); ++i) {
+            const double t = endNs.at(i) / 1e6;
+            const double d = (i == 0) ? 0.0 : (endNs.at(i) - endNs.at(i - 1)) / 1e6;
+            const qint64 lat = (i < inputLatencyNs.size()) ? inputLatencyNs.at(i) : -1;
+            out << i << ',' << QString::number(t, 'f', 3) << ','
+                << QString::number(d, 'f', 3) << ','
+                << QString::number(paintNs.at(i) / 1e6, 'f', 3) << ','
+                << (lat < 0 ? QString() : QString::number(lat / 1e6, 'f', 3)) << '\n';
+        }
+        f.close();
+        qInfo().noquote() << "[leap-frame-log] wrote" << endNs.size() << "frames to" << path;
+    }
+};
+
+FrameLog& frameLog();
+
+void flushFrameLogAtExit() {
+    frameLog().flush();
+}
+
+FrameLog& frameLog() {
+    static FrameLog log;
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = true;
+        const QString configured = qEnvironmentVariable("LEAP_FRAME_LOG").trimmed();
+        if (!configured.isEmpty()) {
+            log.init(configured);
+            if (QCoreApplication::instance()) {
+                QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                                 qApp, []() { frameLog().flush(); });
+            }
+            qAddPostRoutine(&flushFrameLogAtExit);
+        }
+    }
+    return log;
+}
+
+}  // namespace
 
 const QSet<int> MindMapView::s_navKeys = {
     Qt::Key_Tab, Qt::Key_Backtab,
@@ -119,6 +216,15 @@ MindMapView::MindMapView(QGraphicsScene* scene, QWidget* parent)
     m_miniMap = new MindMapMiniMap(this);
     updateMiniMapGeometry();
 
+    // 小地图上的单击/拖拽都走同一个入口：点击平滑传送，拖拽直接跟手。
+    connect(m_miniMap, &MindMapMiniMap::panRequested, this,
+            [this](const QPointF& sceneCenter, bool animated) {
+                panToSceneCenter(sceneCenter, animated);
+            });
+    // 开始操作时先停掉正在跑的视口动画，否则缓动值会覆盖手动滚动，拖动会一顿一顿。
+    connect(m_miniMap, &MindMapMiniMap::interactionStarted,
+            this, &MindMapView::stopViewportAnimation);
+
     connect(horizontalScrollBar(), &QScrollBar::valueChanged, this,
             [this]() { scheduleMiniMapForViewportChange(); });
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this,
@@ -132,6 +238,9 @@ MindMapView::MindMapView(QGraphicsScene* scene, QWidget* parent)
             resetStateForSceneChange();
         });
     }
+
+    // 创建后立刻按设置决定显/隐，常亮模式不必等第一次视野移动。
+    reloadMiniMapSettings();
 }
 
 QVector<MindMapNode*> MindMapView::selectedNodes() const {
@@ -174,8 +283,13 @@ void MindMapView::resetForSceneChange() {
 }
 
 void MindMapView::paintEvent(QPaintEvent* event) {
+    FrameLog& frameLogRef = frameLog();
+    const qint64 frameStartNs = frameLogRef.active ? frameLogRef.clock.nsecsElapsed() : 0;
     PerformanceMetrics::ScopedTimer timer(PerformanceMetrics::Stage::ViewPaint);
     QGraphicsView::paintEvent(event);
+    if (frameLogRef.active) {
+        frameLogRef.addFrame(frameStartNs);
+    }
 }
 
 void MindMapView::clearNodeSelection(MindMapNode* exceptNode) {
@@ -357,6 +471,52 @@ void MindMapView::scheduleMiniMapForViewportChange() {
         m_miniMapUpdatePending = false;
         showMiniMapForViewportChange();
     });
+}
+
+void MindMapView::panToSceneCenter(const QPointF& sceneCenter, bool animated) {
+    if (!scene() || !viewport()) return;
+
+    // transform().m11() 是该缩放下"场景单位 -> 视图像素"的比例。
+    // 这里是等比缩放（没有旋转），所以水平和垂直共用一个系数。
+    const QPointF currentCenter = mapToScene(viewport()->rect().center());
+    const qreal scaleFactor = transform().m11();
+    if (!(scaleFactor > 0.0)) return;
+
+    const QPointF delta = (sceneCenter - currentCenter) * scaleFactor;
+    const int targetHorizontal = horizontalScrollBar()->value() + qRound(delta.x());
+    const int targetVertical = verticalScrollBar()->value() + qRound(delta.y());
+
+    if (animated) {
+        // 边界钳制与时长（smoothViewportDurationMs）都在 animateViewportTo 里，
+        // 这里不重复实现，避免两处限制不一致。
+        animateViewportTo(targetHorizontal, targetVertical);
+        return;
+    }
+
+    horizontalScrollBar()->setValue(
+        qBound(horizontalScrollBar()->minimum(), targetHorizontal, horizontalScrollBar()->maximum()));
+    verticalScrollBar()->setValue(
+        qBound(verticalScrollBar()->minimum(), targetVertical, verticalScrollBar()->maximum()));
+}
+
+void MindMapView::reloadMiniMapSettings() {
+    if (!m_miniMap) return;
+
+    const QString mode = QSettings()
+        .value(QStringLiteral("minimapMode"), QStringLiteral("onMove"))
+        .toString();
+    MindMapMiniMap::DisplayMode displayMode = MindMapMiniMap::DisplayMode::OnMovement;
+    if (mode == QLatin1String("always")) {
+        displayMode = MindMapMiniMap::DisplayMode::Always;
+    } else if (mode == QLatin1String("off")) {
+        displayMode = MindMapMiniMap::DisplayMode::Off;
+    }
+
+    m_miniMap->setDisplayMode(displayMode);
+    if (displayMode == MindMapMiniMap::DisplayMode::Always) {
+        updateMiniMapGeometry();
+        m_miniMap->raise();
+    }
 }
 
 void MindMapView::updateDropIndicator() {
@@ -592,6 +752,7 @@ void MindMapView::updateInsertImageButtonState() {
 }
 
 void MindMapView::wheelEvent(QWheelEvent* event) {
+    frameLog().noteInput();
     stopViewportAnimation();
     if (event->modifiers() & Qt::ControlModifier) {
         qreal factor = event->angleDelta().y() > 0 ? 1.1 : 0.9;
@@ -638,6 +799,7 @@ void MindMapView::resetDragState() {
 }
 
 void MindMapView::mousePressEvent(QMouseEvent* event) {
+    frameLog().noteInput();
     stopViewportAnimation();
     invalidateHoverQueryCache();
     if (event->button() == Qt::LeftButton &&
@@ -964,6 +1126,7 @@ void MindMapView::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void MindMapView::mouseMoveEvent(QMouseEvent* event) {
+    frameLog().noteInput();
     PerformanceMetrics::ScopedTimer timer(PerformanceMetrics::Stage::MouseMove);
     // 【新增】处理节点宽度拖拽
     // 【修改】拖拽调整文本块宽度
@@ -1203,6 +1366,7 @@ void MindMapView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void MindMapView::mouseReleaseEvent(QMouseEvent* event) {
+    frameLog().noteInput();
     invalidateHoverQueryCache();
     auto nodeInCurrentScene = [this](MindMapNode* node) {
         return node && scene() && node->scene() == scene();
@@ -1350,6 +1514,7 @@ void MindMapView::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void MindMapView::keyPressEvent(QKeyEvent* event) {
+    frameLog().noteInput();
     if (event->modifiers() & Qt::ControlModifier) {
         if (event->key() == Qt::Key_A && !MindMapNode::findEditingNode(scene())) {
             if (scene()) {

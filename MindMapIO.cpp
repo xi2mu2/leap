@@ -1,5 +1,6 @@
 #include "MindMapIO.h"
 #include "MindMapFormulaDialog.h"
+#include "LeapVersion.h"
 #include "MindMapNode.h"
 #include "MindMapImageItem.h"
 #include "MindMapBlock.h"
@@ -7,6 +8,9 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QStringList>
 #include <QImage>
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -33,7 +37,7 @@ static int countNodes(const QJsonObject& obj) {
 
 static const QString WATERMARK_AUTHOR = QStringLiteral("刘羽林");
 static const QString WATERMARK_APP = QStringLiteral("leap");
-static const QString WATERMARK_VERSION = QStringLiteral("v2.14.10");
+static const QString WATERMARK_VERSION = QStringLiteral(LEAP_VERSION_DISPLAY);
 
 static QString imageToBase64(const QImage& image) {
     PerformanceMetrics::ScopedTimer timer(PerformanceMetrics::Stage::SaveImageEncode);
@@ -312,9 +316,13 @@ MindMapNode* MindMapIO::deserialize(const QJsonObject& obj, QGraphicsScene* scen
     return node;
 }
 
-bool MindMapIO::saveToFile(MindMapNode* root, const QString& filePath) {
+bool MindMapIO::saveToFile(MindMapNode* root, const QString& filePath, QString* errorMessage) {
     PerformanceMetrics::ScopedTimer totalTimer(PerformanceMetrics::Stage::SaveTotal);
-    if (!root) return false;
+    if (errorMessage) errorMessage->clear();
+    if (!root) {
+        if (errorMessage) *errorMessage = QStringLiteral("没有可保存的根节点。");
+        return false;
+    }
 
     QJsonObject doc;
     doc["version"] = CURRENT_VERSION;
@@ -333,8 +341,46 @@ bool MindMapIO::saveToFile(MindMapNode* root, const QString& filePath) {
     {
         PerformanceMetrics::ScopedTimer timer(PerformanceMetrics::Stage::SaveFileWrite);
         QFile file(filePath);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
-        file.write(jsonData);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            if (errorMessage) {
+                const QFileInfo info(filePath);
+                QStringList details;
+                details << QStringLiteral("路径：%1").arg(QDir::toNativeSeparators(filePath));
+                details << QStringLiteral("系统提示：%1").arg(file.errorString());
+                details << QStringLiteral("目录存在：%1").arg(info.dir().exists() ? QStringLiteral("是") : QStringLiteral("否"));
+                details << QStringLiteral("文件存在：%1").arg(info.exists() ? QStringLiteral("是") : QStringLiteral("否"));
+                details << QStringLiteral("文件可写：%1").arg(info.isWritable() ? QStringLiteral("是") : QStringLiteral("否"));
+                // 两个探针：区分「这个进程被整体限制」与「只是这个目录/这个文件不能写」。
+                const QString siblingProbe = filePath + QStringLiteral(".write-test");
+                QFile sibling(siblingProbe);
+                const bool siblingOk = sibling.open(QIODevice::WriteOnly | QIODevice::Text);
+                const QString siblingError = sibling.errorString();
+                if (siblingOk) { sibling.close(); QFile::remove(siblingProbe); }
+                details << QStringLiteral("同目录新建文件：%1")
+                               .arg(siblingOk ? QStringLiteral("成功") : QStringLiteral("失败（%1）").arg(siblingError));
+
+                const QString tempProbe = QDir(QDir::tempPath()).filePath(QStringLiteral("leap-save-probe.txt"));
+                QFile tempFile(tempProbe);
+                const bool tempOk = tempFile.open(QIODevice::WriteOnly | QIODevice::Text);
+                const QString tempError = tempFile.errorString();
+                if (tempOk) { tempFile.write("x"); tempFile.close(); QFile::remove(tempProbe); }
+                details << QStringLiteral("临时目录写入：%1")
+                               .arg(tempOk ? QStringLiteral("成功") : QStringLiteral("失败（%1）").arg(tempError));
+                details << QStringLiteral("临时目录：%1").arg(QDir::toNativeSeparators(QDir::tempPath()));
+                *errorMessage = details.join(QLatin1Char('\n'));
+            }
+            return false;
+        }
+        const qint64 written = file.write(jsonData);
+        if (written != jsonData.size()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("写入不完整（%1 / %2 字节）：%3")
+                                    .arg(written).arg(jsonData.size()).arg(file.errorString());
+            }
+            file.close();
+            return false;
+        }
+        file.flush();
     }
     return true;
 }

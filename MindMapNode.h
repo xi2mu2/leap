@@ -199,6 +199,12 @@ public:
     const MindMapLevelStyles& levelStyles() const;
     MindMapLevelStyles& levelStyles();
     void setLevelStyles(const MindMapLevelStyles& styles);
+    // 该节点所属 1 级分支在根节点子列表中的序号，彩虹分支按它取色；根节点返回 -1。
+    // 序号只看节点树里的顺序，与画布上的纵向排布无关。
+    int styleBranchIndex() const;
+    // 递归按当前父链重新套用样式。插入子树、拖拽换父之后必须调用，
+    // 否则子树沿用旧父节点的分支色。
+    void reapplyStylesToSubtree();
     // Local serialized content only; IDs, children, styles and fold state are live.
     void invalidateSerializationCache();
     bool hasSerializationCache() const { return m_hasSerializationCache; }

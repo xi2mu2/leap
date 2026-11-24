@@ -5,6 +5,7 @@
 #include <QTimer>
 #include "MainWindow.h"
 #include "StartupDialog.h"
+#include "LeapVersion.h"
 
 int main(int argc, char *argv[]) {
     // 【关键】在 QApplication 构造前保存原始命令行参数，
@@ -19,6 +20,8 @@ int main(int argc, char *argv[]) {
     // 保存在同一位置，并在不同启动路径间保持一致。
     QCoreApplication::setOrganizationName(QStringLiteral("刘羽林"));
     QCoreApplication::setApplicationName(QStringLiteral("leap"));
+    // 版本号来自 VERSION -> Version.h，不在这里硬编码
+    QCoreApplication::setApplicationVersion(QStringLiteral(LEAP_VERSION_STRING));
 
     // 从 Qt 资源系统加载图标（leap.png 已编译进 exe）
     app.setWindowIcon(QIcon(":/leap.png"));

@@ -2,16 +2,19 @@
 
 #include <QButtonGroup>
 #include <QColorDialog>
+#include <QEasingCurve>
 #include <QFontMetricsF>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QStyle>
 #include <QTextLayout>
 #include <QTextOption>
 #include <QToolButton>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QtMath>
 
@@ -272,6 +275,116 @@ void SegmentedControl::setCurrentData(const QVariant& data) {
 }
 
 // ============================================================
+// ToggleSwitch
+// ============================================================
+
+namespace {
+constexpr int kSwitchWidth = 40;       // 轨道尺寸：40x22 与移动端开关的观感一致
+constexpr int kSwitchHeight = 22;
+constexpr int kSwitchKnobInset = 3;
+}  // namespace
+
+ToggleSwitch::ToggleSwitch(QWidget* parent) : QAbstractButton(parent) {
+    setCheckable(true);
+    setCursor(Qt::PointingHandCursor);
+    setFocusPolicy(Qt::TabFocus);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+    // 80 ms 的位移动画：够顺滑又不拖沓，远低于 400 ms 的可感知上限。
+    m_animation = new QVariantAnimation(this);
+    m_animation->setDuration(80);
+    m_animation->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_animation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        m_position = value.toReal();
+        update();
+    });
+    connect(this, &QAbstractButton::toggled, this, [this](bool checked) {
+        m_animation->stop();
+        m_animation->setStartValue(m_position);
+        m_animation->setEndValue(checked ? 1.0 : 0.0);
+        m_animation->start();
+    });
+}
+
+QSize ToggleSwitch::sizeHint() const {
+    return QSize(kSwitchWidth, kSwitchHeight);
+}
+
+void ToggleSwitch::setAccentColor(const QColor& color) {
+    if (!color.isValid() || m_accent == color) return;
+    m_accent = color;
+    update();
+}
+
+void ToggleSwitch::setCheckedInstant(bool checked) {
+    if (m_animation) m_animation->stop();
+    // blockSignals：程序同步状态不应该回传给调用方，避免"刷新控件"触发"写数据"的环。
+    {
+        const QSignalBlocker blocker(this);
+        QAbstractButton::setChecked(checked);
+    }
+    m_position = checked ? 1.0 : 0.0;
+    update();
+}
+
+bool ToggleSwitch::event(QEvent* event) {
+    // 焦点环与 hover 都交给 QAbstractButton 处理，这里只补一个 Enter/Leave 重绘。
+    if (event->type() == QEvent::Enter || event->type() == QEvent::Leave) {
+        update();
+    }
+    return QAbstractButton::event(event);
+}
+
+void ToggleSwitch::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const qreal trackHeight = kSwitchHeight;
+    const qreal trackWidth = kSwitchWidth;
+    const QRectF trackRect((width() - trackWidth) / 2.0, (height() - trackHeight) / 2.0,
+                           trackWidth, trackHeight);
+    const qreal radius = trackRect.height() / 2.0;
+
+    // 关：中性灰轨道；开：accent。中间态给一点透明度，动画看起来不会突兀。
+    QColor trackColor;
+    if (m_position <= 0.0) {
+        trackColor = QColor(0, 0, 0, 46);
+    } else if (m_position >= 1.0) {
+        trackColor = m_accent;
+    } else {
+        trackColor = QColor(
+            int(0 + (m_accent.red() - 0) * m_position),
+            int(0 + (m_accent.green() - 0) * m_position),
+            int(0 + (m_accent.blue() - 0) * m_position),
+            int(46 + (255 - 46) * m_position));
+    }
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(trackColor);
+    painter.drawRoundedRect(trackRect, radius, radius);
+
+    // 键盘焦点：外圈用 accent 描一道，可见且不依赖颜色区分状态。
+    if (hasFocus()) {
+        QPen focusPen(m_accent);
+        focusPen.setWidthF(1.6);
+        painter.setPen(focusPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(trackRect.adjusted(-2.5, -2.5, 2.5, 2.5), radius + 2.5, radius + 2.5);
+    }
+
+    const qreal knobRadius = radius - kSwitchKnobInset;
+    const qreal knobTravel = trackRect.width() - 2 * (radius);
+    const qreal knobCenterX = trackRect.left() + radius + knobTravel * m_position;
+    const QPointF knobCenter(knobCenterX, trackRect.center().y());
+
+    // 圆点带一圈极淡的阴影，压在深色轨道上也能看出边界。
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 30));
+    painter.drawEllipse(knobCenter, knobRadius, knobRadius);
+    painter.setBrush(Qt::white);
+    painter.drawEllipse(knobCenter, knobRadius - 0.5, knobRadius - 0.5);
+}
+
+// ============================================================
 // StylePreviewWidget
 // ============================================================
 
@@ -302,6 +415,13 @@ void StylePreviewWidget::setConnectorColor(const QColor& color) {
     update();
 }
 
+void StylePreviewWidget::setRainbowSelectedBranch(int branch) {
+    const int clamped = qMax(0, branch);
+    if (m_rainbowSelectedBranch == clamped) return;
+    m_rainbowSelectedBranch = clamped;
+    if (m_rainbowEnabled) update();
+}
+
 QSize StylePreviewWidget::sizeHint() const {
     return QSize(248, 320);
 }
@@ -310,12 +430,26 @@ QSize StylePreviewWidget::minimumSizeHint() const {
     return QSize(150, 200);
 }
 
+void StylePreviewWidget::setRainbowPreview(bool enabled, const QVector<QColor>& colors) {
+    if (m_rainbowEnabled == enabled && m_rainbowColors == colors) return;
+    m_rainbowEnabled = enabled;
+    m_rainbowColors = colors;
+    update();
+}
+
 void StylePreviewWidget::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
+    if (m_rainbowEnabled) {
+        paintRainbowPreview(&painter);
+    } else {
+        paintLevelPreview(&painter);
+    }
+}
 
+void StylePreviewWidget::paintLevelPreview(QPainter* painter) {
     const qreal pad = 16.0;
     const qreal availWidth = qMax<qreal>(120.0, width() - 2 * pad);
     const qreal gap = 26.0;
@@ -351,33 +485,110 @@ void StylePreviewWidget::paintEvent(QPaintEvent* event) {
     QPen connectorPen(m_connector);
     connectorPen.setWidthF(1.6);
     connectorPen.setCapStyle(Qt::RoundCap);
-    painter.setPen(connectorPen);
+    painter->setPen(connectorPen);
     const qreal spineX = pad + 17.0;
-    painter.drawLine(QPointF(spineX, rootRect.bottom()),
+    painter->drawLine(QPointF(spineX, rootRect.bottom()),
                      QPointF(spineX, deeperRect.center().y()));
-    painter.drawLine(QPointF(spineX, childRect.center().y()),
+    painter->drawLine(QPointF(spineX, childRect.center().y()),
                      QPointF(childRect.left(), childRect.center().y()));
-    painter.drawLine(QPointF(spineX, deeperRect.center().y()),
+    painter->drawLine(QPointF(spineX, deeperRect.center().y()),
                      QPointF(deeperRect.left(), deeperRect.center().y()));
 
-    drawNodeShape(&painter, rootRect, m_styles.root);
-    drawNodeShape(&painter, childRect, m_styles.firstChild);
-    drawNodeShape(&painter, deeperRect, m_styles.deeper);
+    drawNodeShape(painter, rootRect, m_styles.root);
+    drawNodeShape(painter, childRect, m_styles.firstChild);
+    drawNodeShape(painter, deeperRect, m_styles.deeper);
 
-    drawNodeText(&painter, rootRect, m_styles.root, rootText);
-    drawNodeText(&painter, childRect, m_styles.firstChild, childText);
-    drawNodeText(&painter, deeperRect, m_styles.deeper, deeperText);
+    drawNodeText(painter, rootRect, m_styles.root, rootText);
+    drawNodeText(painter, childRect, m_styles.firstChild, childText);
+    drawNodeText(painter, deeperRect, m_styles.deeper, deeperText);
 
     const QRectF activeRect = m_activeLevel == 0 ? rootRect
                             : m_activeLevel == 1 ? childRect
                                                  : deeperRect;
     QPen ringPen(m_accent);
     ringPen.setWidthF(2.0);
-    painter.setPen(ringPen);
-    painter.setBrush(Qt::NoBrush);
+    painter->setPen(ringPen);
+    painter->setBrush(Qt::NoBrush);
     QPainterPath ringPath;
     ringPath.addRoundedRect(activeRect.adjusted(-5, -5, 5, 5), kCornerRadius + 5, kCornerRadius + 5);
-    painter.drawPath(ringPath);
+    painter->drawPath(ringPath);
+}
+
+void StylePreviewWidget::paintRainbowPreview(QPainter* painter) {
+    QVector<QColor> colors = m_rainbowColors;
+    if (colors.isEmpty()) colors = MindMapRainbowStyle::defaultColors();
+    const int rows = colors.size();
+    if (rows <= 0) return;
+
+    // 用与画布完全相同的派生规则生成预览色，避免预览和节点各写一套算法。
+    MindMapRainbowStyle palette;
+    palette.colors = colors;
+
+    const qreal pad = 12.0;
+    const qreal availWidth = qMax<qreal>(120.0, width() - 2 * pad);
+    const qreal rowArea = (height() - 2 * pad) / rows;
+
+    // 面板只有 280 px 宽，节点必须明显小于真实节点，6 行才放得下。
+    const qreal l1Width = qBound<qreal>(34.0, availWidth * 0.28, 60.0);
+    const qreal l2Width = qBound<qreal>(54.0, availWidth * 0.44, 100.0);
+    const qreal nodeHeight = qBound<qreal>(16.0, rowArea - 4.0, 26.0);
+    const qreal connectGap = 14.0;
+
+    QFont labelFont = m_styles.deeper.font();
+    labelFont.setPointSize(qBound(6, labelFont.pointSize(), 9));
+
+    const qreal contentWidth = l1Width + connectGap + l2Width;
+    const qreal startX = pad + qMax<qreal>(0.0, (availWidth - contentWidth) / 2.0);
+
+    for (int i = 0; i < rows; ++i) {
+        const qreal centerY = pad + rowArea * (i + 0.5);
+        const QRectF l1Rect(startX, centerY - nodeHeight / 2.0, l1Width, nodeHeight);
+        const QRectF l2Rect(startX + l1Width + connectGap, centerY - nodeHeight / 2.0, l2Width, nodeHeight);
+
+        // 被选中的分支整行铺一层极淡的 accent 底：比给每个节点描边更清楚"这是第几个分支"，
+        // 也不会和下面 m_activeLevel 的选中环抢视觉。
+        if (i == m_rainbowSelectedBranch) {
+            QColor highlight = m_accent;
+            highlight.setAlpha(28);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(highlight);
+            const QRectF rowRect(pad, centerY - rowArea / 2.0 + 1.0, availWidth, rowArea - 2.0);
+            painter->drawRoundedRect(rowRect, kCornerRadius, kCornerRadius);
+        }
+
+        MindMapStyle l1 = palette.styleFor(m_styles.firstChild, i, 1);
+        MindMapStyle l2 = palette.styleFor(m_styles.deeper, i, 2);
+        // 小节点上原始边框粗细会糊成一团，按比例压到 1~3 px。
+        l1.borderWidth = qBound(1, l1.borderWidth, 3);
+        l2.borderWidth = qBound(1, l2.borderWidth, 3);
+        l1.fontPointSize = labelFont.pointSize();
+        l2.fontPointSize = labelFont.pointSize();
+
+        QPen connectorPen(m_connector);
+        connectorPen.setWidthF(1.2);
+        connectorPen.setCapStyle(Qt::RoundCap);
+        painter->setPen(connectorPen);
+        painter->drawLine(QPointF(l1Rect.right(), centerY), QPointF(l2Rect.left(), centerY));
+
+        drawNodeShape(painter, l1Rect, l1);
+        drawNodeShape(painter, l2Rect, l2);
+        drawNodeText(painter, l1Rect, l1, QStringLiteral("1 级"));
+        drawNodeText(painter, l2Rect, l2, QStringLiteral("2 级"));
+
+        const QRectF activeRect = m_activeLevel == 1 ? l1Rect
+                                : m_activeLevel == 2 ? l2Rect
+                                                     : QRectF();
+        if (activeRect.isValid()) {
+            QPen ringPen(m_accent);
+            ringPen.setWidthF(1.6);
+            painter->setPen(ringPen);
+            painter->setBrush(Qt::NoBrush);
+            QPainterPath ringPath;
+            ringPath.addRoundedRect(activeRect.adjusted(-3, -3, 3, 3),
+                                    kCornerRadius + 3, kCornerRadius + 3);
+            painter->drawPath(ringPath);
+        }
+    }
 }
 
 // ============================================================

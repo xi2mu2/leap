@@ -6,11 +6,36 @@ echo ========================================
 echo leap Release build and package
 echo ========================================
 
-set "APP_VERSION=2.14.10"
 set "QT_DIR=C:\Qt\6.5.3\mingw_64"
 set "MINGW_DIR=C:\Qt\Tools\mingw1120_64"
 set "PROJECT_DIR=%~dp0"
 set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
+
+rem ================ 版本号：唯一来源是根目录 VERSION.txt ================
+rem 不再在这里手写版本号。leap.rc / LeapVersion.h / 包名 / 安装包名 / manifest
+rem 全部从 VERSION.txt 派生，彻底消灭版本漂移。
+if not exist "%PROJECT_DIR%\VERSION.txt" (
+    echo ERROR: VERSION.txt not found: "%PROJECT_DIR%\VERSION.txt"
+    exit /b 1
+)
+set "APP_VERSION="
+for /f "usebackq delims=" %%v in ("%PROJECT_DIR%\VERSION.txt") do (
+    if not defined APP_VERSION set "APP_VERSION=%%v"
+)
+if not defined APP_VERSION (
+    echo ERROR: VERSION.txt is empty.
+    exit /b 1
+)
+rem 去掉首尾空白（编辑器很容易留下一个尾随空格）
+for /f "tokens=* delims= " %%v in ("%APP_VERSION%") do set "APP_VERSION=%%v"
+echo %APP_VERSION%| findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+if errorlevel 1 (
+    echo ERROR: VERSION.txt must contain 主.次.修订, e.g. 2.16.2
+    echo        got: "%APP_VERSION%"
+    echo        Check for a BOM, extra lines or trailing spaces.
+    exit /b 1
+)
+echo Version: %APP_VERSION%
 set "BUILD_DIR=%PROJECT_DIR%\build\release"
 set "DIST_ROOT=%PROJECT_DIR%\release"
 set "PACKAGE_NAME=leap-v%APP_VERSION%-win64"
@@ -97,7 +122,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '
 if errorlevel 1 exit /b 1
 
 if exist "%ISCC%" (
-    "%ISCC%" "%PROJECT_DIR%\installer\leap.iss"
+    "%ISCC%" /DAppVersion=%APP_VERSION% "%PROJECT_DIR%\installer\leap.iss"
     if errorlevel 1 (
         echo ERROR: Inno Setup compilation failed.
         exit /b 1

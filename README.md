@@ -10,14 +10,18 @@
 - 数学公式渲染：基于 JKQTMathText
 - 导出：可将导图导出为 PPT
 - 主题：亮色 / 暗色
+- 彩虹分支：按 1 级子节点的先后顺序循环取色（六色一周期），每个分支的后续节点沿用同色系；内置 14 套预设色卡（经典彩虹 / 暖橙青紫 / 粉橙深红 / 单色蓝渐变 / 马卡龙淡彩 / 大地色 / 宝石深色 / 粉蓝撞色 / 莫兰迪等），也可以逐分支微调填充 / 边框 / 字体颜色，改完能命名保存成自己的色卡
+- Mermaid 互操作：可把导图导出为 `.mmd`，也能把 `.mmd` / `.mermaid` 导入成节点树，导出的文件可直接贴到 mermaid.live 预览；形状、图标、`:::` 类名、逐节点配色与图片是 Mermaid 表达不了的，导入时会忽略并给出提示
 - 小地图导航、图片节点、自动备份
 
 ## 下载
 
-前往 [Releases](../../releases) 页面下载最新版本（当前 v2.14.10）：
+前往 [Releases](../../releases) 页面下载最新版本：
 
-- **安装版**：`leap-2.14.10-setup.exe`（约 18 MB）—— 双击安装，无需管理员权限，安装路径可改，可选创建桌面快捷方式，可在「应用和功能」中正常卸载；
-- **免安装版**：`leap-v2.14.10-win64.zip`（约 23 MB）—— 解压后直接运行 `leap.exe`，适合放 U 盘随身携带。
+由于Windows的更新，建议还是用免安装版
+
+- **安装版**：`leap-<版本>-setup.exe`（约 18 MB）—— 双击安装，无需管理员权限，安装路径可改，可选创建桌面快捷方式，可在「应用和功能」中正常卸载；
+- **免安装版**：`leap-v<版本>-win64.zip`（约 23 MB）—— 解压后直接运行 `leap.exe`
 
 系统要求：Windows 10 / 11 64 位。
 
@@ -49,7 +53,12 @@ build_release.bat
 
 产物在 `release/` 目录下：`leap-v<版本>-win64/`（免安装目录）、`.zip` 压缩包、`leap-<版本>-setup.exe` 安装包。
 
-> 发版时记得同步三处版本号：`leap.rc`、`MainWindow.cpp` 中的 `APP_VERSION`、`MindMapIO.cpp` 中的 `WATERMARK_VERSION`，以及 `build_release.bat` 与 `installer/leap.iss` 里的版本号。
+> **版本号只写在根目录的 `VERSION.txt` 文件里**（单行，形如 `2.16.2`）。
+> `Version.h`、`leap.rc`、免安装包名、安装包名全部由 CMake / `build_release.bat`
+> 从它自动生成，请勿手动改动其它位置的版本号。
+
+> 注意：`MindMapIO::CURRENT_VERSION` 是 **`.mindmap` 文件格式版本**，
+> 与产品版本号无关，不要跟着 `VERSION` 一起改。
 
 ## 许可证
 

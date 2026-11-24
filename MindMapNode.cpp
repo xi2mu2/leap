@@ -409,9 +409,35 @@ int MindMapNode::styleLevel() const {
     return depth == 0 ? 0 : (depth == 1 ? 1 : 2);
 }
 
+int MindMapNode::styleBranchIndex() const {
+    // 根节点本身不属于任何分支；连到根上的那层（1 级）按它在根的子列表里的位置取色。
+    if (!m_parent) return -1;
+    const MindMapNode* branch = this;
+    while (branch->m_parent && branch->m_parent->m_parent) {
+        branch = branch->m_parent;
+    }
+    const MindMapNode* root = branch->m_parent;
+    if (!root) return -1;
+    const int index = root->m_children.indexOf(const_cast<MindMapNode*>(branch));
+    return index < 0 ? 0 : index;
+}
+
 MindMapStyle MindMapNode::styleForCurrentLevel() const {
     const MindMapLevelStyles& styles = styleRoot()->m_levelStyles;
-    return styleLevel() == 0 ? styles.root : (styleLevel() == 1 ? styles.firstChild : styles.deeper);
+    const int level = styleLevel();
+    const MindMapStyle& base =
+        level == 0 ? styles.root : (level == 1 ? styles.firstChild : styles.deeper);
+    // 彩虹分支只改填充 / 边框 / 字色三个角色，字号、行距、形状仍取层级样式，
+    // 因此开关彩虹不会影响节点尺寸与布局。
+    if (!styles.rainbow.enabled || level == 0) return base;
+    return styles.rainbow.styleFor(base, styleBranchIndex(), level);
+}
+
+void MindMapNode::reapplyStylesToSubtree() {
+    applyStyle(styleForCurrentLevel());
+    for (auto* child : m_children) {
+        if (child) child->reapplyStylesToSubtree();
+    }
 }
 
 const MindMapLevelStyles& MindMapNode::levelStyles() const { return styleRoot()->m_levelStyles; }
@@ -526,14 +552,36 @@ void MindMapNode::insertChild(int index, MindMapNode* child) {
     if (index > m_children.size()) index = m_children.size();
     m_children.insert(index, child);
     child->m_parent = this;
-    child->applyStyle(child->styleForCurrentLevel());
+    // 插入的子树可能已经带着后代（拖拽换父、撤销恢复）。彩虹分支的颜色取决于
+    // 它落在哪个 1 级分支下，所以整棵子树都要重新套用样式，不能只刷新 child。
+    // 关掉彩虹时只需要刷新 child 自身，和原来的开销一致。
+    if (styleRoot()->m_levelStyles.rainbow.enabled) {
+        child->reapplyStylesToSubtree();
+        // 只有根插子节点才会让后面兄弟的分支序号整体后移；更深的插入不影响序号。
+        if (!m_parent) {
+            for (int i = index + 1; i < m_children.size(); ++i) {
+                if (m_children.at(i)) m_children.at(i)->reapplyStylesToSubtree();
+            }
+        }
+    } else {
+        child->applyStyle(child->styleForCurrentLevel());
+    }
 }
 
 void MindMapNode::removeChild(MindMapNode* child) {
     prepareGeometryChange();
+    const bool wasChild = m_children.contains(child);
     m_children.removeAll(child);
     if (child && child->m_parent == this) {
         child->m_parent = nullptr;
+    }
+    // 删掉一个 1 级分支后，它后面兄弟的分支序号会前移，彩虹色必须跟着重排，
+    // 否则颜色就不再对应“第几个分支”。分支序号取自根的子列表，所以只有根删除
+    // 子节点时才需要重排；更深层的增删不影响任何节点的序号。
+    if (wasChild && !m_parent && styleRoot()->m_levelStyles.rainbow.enabled) {
+        for (auto* sibling : m_children) {
+            if (sibling) sibling->reapplyStylesToSubtree();
+        }
     }
 }
 

@@ -16,6 +16,7 @@
 #include <QListWidget>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QStringList>
@@ -40,9 +41,8 @@ void renderTheme(const QString& outputDir, const QString& mode, const QString& s
     auto* nav = dialog.findChild<QListWidget*>(QStringLiteral("categoryList"));
     if (!nav) return;
 
-    const QStringList pageNames = {QStringLiteral("font"), QStringLiteral("paragraph"),
-                                   QStringLiteral("node"), QStringLiteral("theme"),
-                                   QStringLiteral("operation")};
+    const QStringList pageNames = {QStringLiteral("node"), QStringLiteral("paragraph"),
+                                   QStringLiteral("theme"), QStringLiteral("operation")};
 
     if (qEnvironmentVariableIsSet("SETTINGS_PREVIEW_DEBUG")) {
         nav->setCurrentRow(0);
@@ -61,6 +61,54 @@ void renderTheme(const QString& outputDir, const QString& mode, const QString& s
         const QString path = QDir(outputDir).filePath(
             QStringLiteral("settings-%1-%2.png").arg(suffix, pageNames.at(row)));
         dialog.grab().save(path);
+    }
+
+    // 设置页内容比窗口高时要滚动才能看全，这里再出一组滚到底的图。
+    if (qEnvironmentVariableIsSet("SETTINGS_PREVIEW_SCROLL")) {
+        for (int row = 0; row < pageNames.size() && row < nav->count(); ++row) {
+            nav->setCurrentRow(row);
+            QApplication::processEvents();
+            auto* pages = dialog.findChild<QStackedWidget*>();
+            if (!pages) continue;
+            auto* scroll = qobject_cast<QScrollArea*>(pages->currentWidget());
+            if (!scroll) continue;
+            QScrollBar* bar = scroll->verticalScrollBar();
+            bar->setValue(bar->maximum());
+            QApplication::processEvents();
+            const QString path = QDir(outputDir).filePath(
+                QStringLiteral("settings-%1-%2-bottom.png").arg(suffix, pageNames.at(row)));
+            dialog.grab().save(path);
+            bar->setValue(0);
+            QApplication::processEvents();
+        }
+    }
+
+    // 彩虹分支的预览与画布是两套绘制路径，必须单独出图检查（对齐、节点大小、留白）。
+    if (qEnvironmentVariableIsSet("SETTINGS_PREVIEW_RAINBOW")) {
+        for (int row = 0; row < pageNames.size() && row < nav->count(); ++row) {
+            if (pageNames.at(row) != QLatin1String("node")) continue;
+            nav->setCurrentRow(row);
+            QApplication::processEvents();
+            // 开关现在自绘成 ToggleSwitch，不再是带文字的 chip 按钮。
+            auto* toggle = dialog.findChild<ToggleSwitch*>(QStringLiteral("rainbowToggle"));
+            if (!toggle) return;
+            toggle->click();
+            QApplication::processEvents();
+            // 开关会在两张卡片之间搬动颜色字段，一次事件循环不够布局收敛，
+            // 否则会拍到字段还停在中途的样子。
+            QApplication::processEvents();
+            const QString path = QDir(outputDir).filePath(
+                QStringLiteral("settings-%1-node-rainbow.png").arg(suffix));
+            dialog.grab().save(path);
+            toggle->click();
+            QApplication::processEvents();
+            QApplication::processEvents();
+            // 关掉开关后再拍一张：用来确认三个颜色字段被搬回来时显示的是层级色，
+            // 而不是上一个分支的派生色。
+            const QString restoredPath = QDir(outputDir).filePath(
+                QStringLiteral("settings-%1-node-rainbow-off.png").arg(suffix));
+            dialog.grab().save(restoredPath);
+        }
     }
 }
 
@@ -121,6 +169,10 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationName(QStringLiteral("settings-preview"));
 
     const QString outputDir = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QDir::currentPath();
+    // 注册表写入在受限环境里会被拒绝，浅色/深色就渲染成同一张图。
+    // 这里改用 ini 格式并把存储位置放到输出目录，保证两套主题都能出图。
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, outputDir);
     QSize size(880, 580);
     if (argc > 2) {
         const QStringList parts = QString::fromLocal8Bit(argv[2]).split(QLatin1Char('x'));

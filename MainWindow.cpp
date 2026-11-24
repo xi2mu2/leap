@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "UiColors.h"
+#include "LeapVersion.h"
 #include <QQueue>
 #include <functional>
 #include <utility>
@@ -16,10 +17,12 @@ bool UiColors::s_isDark = false;
 #include "MindMapFormulaDialog.h"
 #include "MindMapCommands.h"
 #include "MindMapPptExporter.h"
+#include "MindMapMermaid.h"
 #include "FloatingEditToolbar.h"
 #include "MindMapSettingsDialog.h"
 #include "NewUserGuide.h"
 #include <QGraphicsScene>
+#include <QJsonObject>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -85,7 +88,7 @@ static const QString AUTHOR_NAME = QString("刘羽林");
 static const QString AUTHOR_EMAIL = QString("1022645285@qq.com");
 static const QString AUTHOR_URL = QString("https://github.com/xi2mu2/leap");
 static const QString ORG_NAME = QString("刘羽林");
-static const QString APP_VERSION = QString("v2.14.10");
+static const QString APP_VERSION = QStringLiteral(LEAP_VERSION_DISPLAY);
 static const QString RECENT_FILES_KEY = QString("recentFiles");
 static const int MAX_RECENT_FILES = 10;
 static const int AUTO_BACKUP_INTERVAL_MS = 120000;
@@ -302,6 +305,8 @@ MainWindow::MainWindow(QWidget* parent)
     exportSubMenu->addAction("导出 SVG", this, &MainWindow::onExportSvg);
     exportSubMenu->addAction("导出 PPT", this, &MainWindow::onExportPpt);
     exportSubMenu->addAction(QStringLiteral("导出大纲"), this, &MainWindow::onExportOutline);
+    exportSubMenu->addAction(QStringLiteral("导出 Mermaid"), this, &MainWindow::onExportMermaid);
+    fileMenu->addAction(QStringLiteral("从 Mermaid 导入…"), this, &MainWindow::onImportMermaid);
     fileBtn->setMenu(fileMenu);
 
     m_toolbarLayout->addWidget(fileBtn);
@@ -971,6 +976,10 @@ void MainWindow::onSettings() {
     });
     connect(&dialog, &MindMapSettingsDialog::layoutRefreshRequested, this,
             refreshAfterStyleChange);
+    // 小地图显示方式即时生效：不必关掉对话框就能看到小地图显/隐。
+    connect(&dialog, &MindMapSettingsDialog::miniMapModeChanged, this, [this]() {
+        if (m_view) m_view->reloadMiniMapSettings();
+    });
     dialog.exec();
 }
 
@@ -1233,23 +1242,31 @@ bool MainWindow::performSave(const QString& filePath) {
         QMessageBox::warning(this, QString("保存失败"), QString("找不到根节点"));
         return false;
     }
-    if (MindMapIO::saveToFile(root, filePath)) {
+    QString errorMessage;
+    if (MindMapIO::saveToFile(root, filePath, &errorMessage)) {
         addRecentFile(filePath);
         deleteBackupForFile(filePath);
         return true;
     } else {
-        QMessageBox::warning(this, QString("保存失败"), QString("无法写入文件"));
+        qWarning().noquote() << "[save] failed:" << filePath << errorMessage;
+        QString text = QStringLiteral("无法写入文件");
+        if (!errorMessage.isEmpty()) text += QStringLiteral("：\n") + errorMessage;
+        QMessageBox::warning(this, QString("保存失败"), text);
         return false;
     }
 }
 
 bool MainWindow::openFile(const QString& filePath) {
+    // .mmd / .mermaid 走导入路径，其余仍按 leap 文档打开
+    if (MindMapMermaidImporter::isMermaidFilePath(filePath)) {
+        return performImportMermaid(filePath);
+    }
     return performOpen(filePath);
 }
 
 void MainWindow::openFileAtStartup(const QString& filePath) {
     if (filePath.isEmpty()) return;
-    performOpen(filePath);
+    openFile(filePath);
 }
 
 bool MainWindow::performOpen(const QString& filePath) {
@@ -1525,10 +1542,10 @@ void MainWindow::onOpen() {
 
     QString filePath = QFileDialog::getOpenFileName(this, QString("打开思维导图"),
                                                     QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-                                                    MindMapIO::fileFilter());
+                                                    MindMapMermaidImporter::openFileFilter());
     if (filePath.isEmpty()) return;
 
-    if (performOpen(filePath)) return;
+    openFile(filePath);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
@@ -1536,7 +1553,8 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
         const QList<QUrl> urls = event->mimeData()->urls();
         for (const QUrl& url : urls) {
             QString filePath = url.toLocalFile();
-            if (filePath.endsWith(".leap", Qt::CaseInsensitive)) {
+            if (filePath.endsWith(".leap", Qt::CaseInsensitive) ||
+                MindMapMermaidImporter::isMermaidFilePath(filePath)) {
                 event->acceptProposedAction();
                 return;
             }
@@ -1549,7 +1567,8 @@ void MainWindow::dropEvent(QDropEvent* event) {
     const QList<QUrl> urls = event->mimeData()->urls();
     for (const QUrl& url : urls) {
         QString filePath = url.toLocalFile();
-        if (filePath.endsWith(".leap", Qt::CaseInsensitive)) {
+        if (filePath.endsWith(".leap", Qt::CaseInsensitive) ||
+            MindMapMermaidImporter::isMermaidFilePath(filePath)) {
             openFile(filePath);
             event->acceptProposedAction();
             return;
@@ -1859,6 +1878,150 @@ void MainWindow::onExportOutline() {
     }
     QMessageBox::information(this, QStringLiteral("导出成功"),
                              QStringLiteral("已保存到：%1").arg(path));
+}
+
+void MainWindow::onImportMermaid() {
+    QString filePath = QFileDialog::getOpenFileName(
+        this, QStringLiteral("从 Mermaid 导入"),
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        MindMapMermaidImporter::fileFilter());
+    if (filePath.isEmpty()) return;
+    performImportMermaid(filePath);
+}
+
+bool MainWindow::performImportMermaid(const QString& filePath) {
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, QStringLiteral("导入失败"),
+                             QStringLiteral("无法读取文件：\n") + file.errorString());
+        return false;
+    }
+    const QByteArray raw = file.readAll();
+    file.close();
+    // Mermaid 文件按 UTF-8 保存；个别编辑器写出 GBK，兜底再试一次本地编码
+    QString text = QString::fromUtf8(raw);
+    if (text.isEmpty() && !raw.isEmpty()) text = QString::fromLocal8Bit(raw);
+
+    // 先解析再问保存：解析失败时当前文档一点没动，用户不会白丢一份工作
+    const MermaidParseResult parsed = MindMapMermaidImporter::parse(text);
+    if (!parsed.ok || parsed.rootJson.isEmpty()) {
+        QString message = QStringLiteral("无法解析这个 Mermaid 文件");
+        if (!parsed.errorMessage.isEmpty()) message += QStringLiteral("：\n") + parsed.errorMessage;
+        QMessageBox::warning(this, QStringLiteral("导入失败"), message);
+        return false;
+    }
+
+    auto choice = askSaveChanges();
+    if (choice == MainWindow::SaveChoice::Cancelled) return false;
+    if (choice == MainWindow::SaveChoice::Discarded) {
+        deleteBackupForFile(m_view->currentFilePath());
+    }
+
+    QJsonObject previousDocument;
+    const QString previousFilePath = m_view->currentFilePath();
+    if (MindMapNode* previousRoot = findRoot()) {
+        previousDocument = MindMapIO::serialize(previousRoot);
+    }
+    m_undoStack->clear();
+    clearScene();
+
+    auto restorePreviousDocument = [&]() {
+        clearScene();
+        m_undoStack->clear();
+        if (!previousDocument.isEmpty()) {
+            MindMapNode* previousRoot = MindMapIO::deserialize(previousDocument, m_scene);
+            if (previousRoot) {
+                previousRoot->layoutTree(0, 0);
+                previousRoot->adjustLayout();
+                previousRoot->updateAllEdges();
+                previousRoot->setNodeSelected(true);
+            }
+        } else {
+            setupDefaultTree();
+        }
+        m_view->setCurrentFilePath(previousFilePath);
+        updateTitle();
+    };
+
+    MindMapNode* root = MindMapIO::deserialize(parsed.rootJson, m_scene);
+    if (!root) {
+        QMessageBox::warning(this, QStringLiteral("导入失败"),
+                             QStringLiteral("Mermaid 内容解析成功，但无法生成思维导图节点。"));
+        restorePreviousDocument();
+        return false;
+    }
+    root->layoutTree(0, 0);
+    root->adjustLayout();
+    root->updateAllEdges();
+    root->setNodeSelected(true);
+
+    QRectF contentRect = m_scene->itemsBoundingRect();
+    if (!contentRect.isEmpty()) {
+        constexpr qreal margin = 200.0;
+        constexpr qreal minimumSize = 4000.0;
+        contentRect.adjust(-margin, -margin, margin, margin);
+        if (contentRect.width() < minimumSize) {
+            const qreal extra = (minimumSize - contentRect.width()) / 2.0;
+            contentRect.adjust(-extra, 0, extra, 0);
+        }
+        if (contentRect.height() < minimumSize) {
+            const qreal extra = (minimumSize - contentRect.height()) / 2.0;
+            contentRect.adjust(0, -extra, 0, extra);
+        }
+        m_scene->setSceneRect(contentRect);
+    }
+    m_view->centerOn(root);
+
+    // 导入的是别人格式的文件，不写回原路径：清空当前路径，首次保存时再问位置，
+    // 免得把 leap 内容直接覆盖到 .mmd 上。
+    m_view->setCurrentFilePath(QString());
+    m_undoStack->push(new QUndoCommand(QStringLiteral("从 Mermaid 导入")));
+    updateTitle();
+
+    QString message = QStringLiteral("已从 %1 导入。\n\n注意：这份文档还没有保存成 leap 文件，"
+                                     "保存时请另选位置。")
+                          .arg(QFileInfo(filePath).fileName());
+    if (!parsed.warnings.isEmpty()) {
+        message += QStringLiteral("\n\n以下内容在导入时被降级或忽略：\n· ") +
+                   parsed.warnings.join(QStringLiteral("\n· "));
+    }
+    QMessageBox::information(this, QStringLiteral("导入完成"), message);
+    return true;
+}
+
+void MainWindow::onExportMermaid() {
+    MindMapNode* root = findRoot();
+    if (!root) {
+        QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("没有可导出的节点"));
+        return;
+    }
+    const QString currentPath = m_view->currentFilePath();
+    const QString defaultPath = currentPath.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) +
+              QStringLiteral("/思维导图.mmd")
+        : QFileInfo(currentPath).absolutePath() + QStringLiteral("/") +
+              QFileInfo(currentPath).completeBaseName() + QStringLiteral(".mmd");
+    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 Mermaid"),
+                                               defaultPath,
+                                               MindMapMermaidImporter::fileFilter());
+    if (path.isEmpty()) return;
+    if (!MindMapMermaidImporter::isMermaidFilePath(path)) path += QStringLiteral(".mmd");
+
+    QStringList warnings;
+    const QString mermaid = MindMapMermaidExporter::toText(root, &warnings);
+    QSaveFile file(path);
+    const QByteArray data = mermaid.toUtf8();
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+        QMessageBox::warning(this, QStringLiteral("导出失败"), file.errorString());
+        return;
+    }
+
+    QString message = QStringLiteral("已保存到：%1").arg(path);
+    if (!warnings.isEmpty()) {
+        message += QStringLiteral("\n\n以下内容无法完整表达：\n· ") +
+                   warnings.join(QStringLiteral("\n· "));
+    }
+    QMessageBox::information(this, QStringLiteral("导出成功"), message);
 }
 
 void MainWindow::onExportPng() {

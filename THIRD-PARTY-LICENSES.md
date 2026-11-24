@@ -32,3 +32,11 @@
 - 位置：`libs/jkqtmathtext/resources/xits`
 - 许可证：SIL Open Font License 1.1
 - 许可证全文见该目录下的 `OFL.txt` 文件。
+
+## open-color（彩虹分支预设色值来源）
+
+- 位置：`MindMapStyle.h` 中 `MindMapRainbowStyle::presets()` 的色值
+- 许可证：MIT
+- 作者：heeyeun
+- 主页：https://github.com/yeun/open-color
+- 本项目只取用了其中的具体色值；预设方案的分组与命名（宝石 / 深靛 / 赤陶 / 秋林 / 晨光）由本项目自行选择编排。

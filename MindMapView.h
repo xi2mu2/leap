@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "MindMapHoverTracker.h"
 #include <QGraphicsView>
@@ -33,6 +33,11 @@ public:
     void setInsertImageButton(QPushButton* btn) { m_insertImgBtn = btn; }
     void updateInsertImageButtonState();
     void notifyGuideEditingExitedByKey();
+    // 小地图"传送"：把视口中心移到 sceneCenter。animated 为真走平滑过渡，
+    // 为假直接改滚动条（拖拽跟踪要跟手）。只改视野，不动缩放与选中。
+    void panToSceneCenter(const QPointF& sceneCenter, bool animated);
+    // 按 QSettings 里的 minimapMode 重新应用小地图的显示方式。
+    void reloadMiniMapSettings();
     // 清理场景前释放所有交互态，避免鼠标事件继续持有已删除节点指针。
     void resetForSceneChange();
     int selectedNodeCount() const;

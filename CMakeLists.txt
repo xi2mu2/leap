@@ -15,6 +15,32 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Svg)
 
+# ========== 版本号单一真源 ==========
+# 版本号只写在根目录的 VERSION 文件里（单行，形如 2.16.2）。
+# LeapVersion.h 与 leap.rc 都由它生成，代码里不要再硬编码版本号。
+file(READ "${CMAKE_SOURCE_DIR}/VERSION.txt" LEAP_VERSION_RAW)
+string(STRIP "${LEAP_VERSION_RAW}" LEAP_VERSION)
+if(NOT LEAP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION.txt 格式无效（应为 主.次.修订，例如 2.16.2）：'${LEAP_VERSION}'")
+endif()
+string(REPLACE "." ";" LEAP_VERSION_PARTS "${LEAP_VERSION}")
+list(GET LEAP_VERSION_PARTS 0 LEAP_VERSION_MAJOR)
+list(GET LEAP_VERSION_PARTS 1 LEAP_VERSION_MINOR)
+list(GET LEAP_VERSION_PARTS 2 LEAP_VERSION_PATCH)
+# Windows 资源文件的四段式版本号：2.16.2 -> 2,16,2,0
+set(LEAP_VERSION_CSV "${LEAP_VERSION_MAJOR},${LEAP_VERSION_MINOR},${LEAP_VERSION_PATCH},0")
+
+set(LEAP_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${LEAP_GENERATED_DIR}")
+
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/LeapVersion.h.in"
+    "${LEAP_GENERATED_DIR}/LeapVersion.h"
+    @ONLY
+)
+
+message(STATUS "leap version: ${LEAP_VERSION} (${LEAP_VERSION_CSV})")
+
 # 收集 jkqtmathtext 库的所有源文件
 file(GLOB_RECURSE JKQTMATHTEXT_SOURCES
     "${CMAKE_SOURCE_DIR}/libs/jkqtmathtext/*.cpp"
@@ -33,9 +59,17 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
 endif()
 
 # ========== Windows 图标资源文件（可选）==========
+# leap.rc 也是模板，由 CMake 生成到 <build>/generated/leap.rc，
+# 这样 exe 的版本信息与 VERSION 永远一致，不需要手动同步。
 set(LEAP_RC_FILE "")
 if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/leap.ico")
-    set(LEAP_RC_FILE "${CMAKE_SOURCE_DIR}/leap.rc")
+    file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/leap.ico" LEAP_ICON_PATH)
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/cmake/leap.rc.in"
+        "${LEAP_GENERATED_DIR}/leap.rc"
+        @ONLY
+    )
+    set(LEAP_RC_FILE "${LEAP_GENERATED_DIR}/leap.rc")
     message(STATUS "leap.ico found, will embed into exe")
 else()
     message(STATUS "leap.ico not found, skipping icon embedding")
@@ -66,6 +100,8 @@ add_executable(leap WIN32
     MindMapMiniMap.h
     MindMapPptExporter.cpp
     MindMapPptExporter.h
+    MindMapMermaid.cpp
+    MindMapMermaid.h
     MindMapIO.cpp
     MindMapIO.h
     MindMapNode.cpp
@@ -74,6 +110,7 @@ add_executable(leap WIN32
     MindMapSceneRect.h
     MindMapNodeSizeCache.h
     MindMapStyle.h
+    RainbowPaletteLibrary.h
     MindMapSettingsDialog.cpp
     MindMapSettingsDialog.h
     SettingsWidgets.cpp
@@ -97,6 +134,9 @@ add_executable(leap WIN32
 
 target_link_libraries(leap Qt6::Core Qt6::Widgets Qt6::Svg)
 
+# LeapVersion.h 由 VERSION 生成在 build/generated 下，主程序需要这个 include 路径。
+target_include_directories(leap PRIVATE "${LEAP_GENERATED_DIR}")
+
 include(CTest)
 if(BUILD_TESTING)
     # Exercise real node/document/image mutations and file round trips.
@@ -104,7 +144,7 @@ if(BUILD_TESTING)
     list(REMOVE_ITEM LEAP_CACHE_TEST_SOURCES main.cpp leap.qrc ${LEAP_RC_FILE})
     add_executable(mindmap_serialization_cache_test
         tests/MindMapSerializationCacheTest.cpp ${LEAP_CACHE_TEST_SOURCES})
-    target_include_directories(mindmap_serialization_cache_test PRIVATE "${CMAKE_SOURCE_DIR}/libs")
+    target_include_directories(mindmap_serialization_cache_test PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${LEAP_GENERATED_DIR}")
     target_link_libraries(mindmap_serialization_cache_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
     if(WIN32)
         target_link_libraries(mindmap_serialization_cache_test PRIVATE dwmapi)
@@ -112,9 +152,29 @@ if(BUILD_TESTING)
     add_test(NAME mindmap_serialization_cache_test COMMAND mindmap_serialization_cache_test)
     set_tests_properties(mindmap_serialization_cache_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    # Mermaid 导入/导出：解析与生成只依赖 Qt，但要造节点树验证往返，
+    # 因此复用 leap 的源列表（同 mindmap_serialization_cache_test）。
+    add_executable(mindmap_mermaid_test
+        tests/MindMapMermaidTest.cpp ${LEAP_CACHE_TEST_SOURCES})
+    target_include_directories(mindmap_mermaid_test PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${LEAP_GENERATED_DIR}")
+    target_link_libraries(mindmap_mermaid_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    if(WIN32)
+        target_link_libraries(mindmap_mermaid_test PRIVATE dwmapi)
+    endif()
+    add_test(NAME mindmap_mermaid_test COMMAND mindmap_mermaid_test)
+    set_tests_properties(mindmap_mermaid_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(mindmap_style_test tests/MindMapStyleTest.cpp)
     target_link_libraries(mindmap_style_test PRIVATE Qt6::Core Qt6::Gui)
     add_test(NAME mindmap_style_test COMMAND mindmap_style_test)
+
+    add_executable(mindmap_rainbow_style_test tests/MindMapRainbowStyleTest.cpp)
+    target_link_libraries(mindmap_rainbow_style_test PRIVATE Qt6::Core Qt6::Gui)
+    add_test(NAME mindmap_rainbow_style_test COMMAND mindmap_rainbow_style_test)
+
+    add_executable(mindmap_rainbow_palette_test tests/MindMapRainbowPaletteTest.cpp)
+    target_link_libraries(mindmap_rainbow_palette_test PRIVATE Qt6::Core Qt6::Gui)
+    add_test(NAME mindmap_rainbow_palette_test COMMAND mindmap_rainbow_palette_test)
 
     add_executable(mindmap_hover_geometry_test tests/MindMapHoverGeometryTest.cpp)
     target_link_libraries(mindmap_hover_geometry_test PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -131,6 +191,22 @@ if(BUILD_TESTING)
     add_executable(mindmap_scene_rect_test tests/MindMapSceneRectTest.cpp)
     target_link_libraries(mindmap_scene_rect_test PRIVATE Qt6::Core Qt6::Gui)
     add_test(NAME mindmap_scene_rect_test COMMAND mindmap_scene_rect_test)
+
+    # 小地图投影：正/反变换与信箱带钳制，纯几何，不需要 QPA。
+    add_executable(mindmap_minimap_geometry_test tests/MindMapMiniMapGeometryTest.cpp)
+    target_link_libraries(mindmap_minimap_geometry_test PRIVATE Qt6::Core Qt6::Gui)
+    add_test(NAME mindmap_minimap_geometry_test COMMAND mindmap_minimap_geometry_test)
+
+    # 版本号单一真源：校验 Version.h 由 VERSION 正确生成，并防止程序版本
+    # 与文件格式版本（MindMapIO::CURRENT_VERSION）被后人混用。
+    add_executable(mindmap_version_test tests/MindMapVersionTest.cpp)
+    target_include_directories(mindmap_version_test PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+        "${LEAP_GENERATED_DIR}"
+    )
+    # 需要 Widgets：测试里 include 了 MindMapIO.h 以读取文件格式版本常量。
+    target_link_libraries(mindmap_version_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    add_test(NAME mindmap_version_test COMMAND mindmap_version_test)
 endif()
 
 # 【新增】Windows 下链接 dwmapi 库（用于深色模式标题栏）
@@ -206,6 +282,7 @@ endif()
 
 target_include_directories(settings_preview PRIVATE
     "${CMAKE_SOURCE_DIR}"
+    "${LEAP_GENERATED_DIR}"
 )
 
 

@@ -8,7 +8,11 @@
 
 #define AppName "leap 思维导图"
 #define AppShortName "leap"
-#define AppVersion "2.14.10"
+; 版本号由 build_release.bat 通过 ISCC /DAppVersion=<VERSION> 传入，
+; 这里的默认值只是为了让本文件能单独打开而不报错。
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 #define AppPublisher "刘羽林"
 #define AppURL "https://github.com/xi2mu2/leap"
 #define AppExeName "leap.exe"

@@ -6,7 +6,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "installer", "assets")
 os.makedirs(OUT, exist_ok=True)
 
-VERSION = "2.14.10"
+VERSION = "2.14.5"
 LOGO = os.path.join(ROOT, "leap.png")
 FONT_BD = "C:/Windows/Fonts/msyhbd.ttc"
 FONT_RG = "C:/Windows/Fonts/msyh.ttc"

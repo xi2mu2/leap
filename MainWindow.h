@@ -44,6 +44,9 @@ private slots:
     void onExportSvg();
     void onExportPpt();
     void onExportOutline();
+    // 【新增】Mermaid 导入 / 导出
+    void onImportMermaid();
+    void onExportMermaid();
     void onHelp();
     void onAbout();
     void onBold();
@@ -76,6 +79,8 @@ private:
     SaveChoice askSaveChanges();
     bool performSave(const QString& filePath);
     bool performOpen(const QString& filePath);
+    // 把 Mermaid 文本解析成文档并替换当前场景（失败时保留原文档）
+    bool performImportMermaid(const QString& filePath);
     void performAutoBackup();
     bool shouldPromptForBackup(const QString& filePath) const;
     bool confirmBackupRestore(const QString& filePath, QString* pathToOpen);

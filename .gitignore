@@ -1,6 +1,7 @@
 # 构建产物
 build/
 build-*/
+build_*/
 out/
 dist/
 release/
@@ -17,6 +18,9 @@ CMakeLists.txt.user*
 .qtcreator/
 .vs/
 .vscode/
+
+# 本地字体素材：约 29 MB，未参与构建与打包，不入库
+font/
 
 # 本地临时文件
 .tmp_probe/

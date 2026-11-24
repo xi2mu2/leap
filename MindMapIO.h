@@ -25,7 +25,10 @@ public:
     static QJsonObject serialize(MindMapNode* root, const QString& idPrefix = "1");
     static MindMapNode* deserialize(const QJsonObject& obj, QGraphicsScene* scene = nullptr,
                                     const LoadProgressCallback& progress = {});
-    static bool saveToFile(MindMapNode* root, const QString& filePath);
+    // errorMessage 非空时，失败原因会写进去（系统错误 + 路径诊断），
+    // 便于「保存失败」弹窗把真正的原因告诉用户。
+    static bool saveToFile(MindMapNode* root, const QString& filePath,
+                           QString* errorMessage = nullptr);
     static MindMapNode* loadFromFile(const QString& filePath, QGraphicsScene* scene = nullptr,
                                      const LoadProgressCallback& progress = {});
     static QString fileFilter();
