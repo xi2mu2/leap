@@ -11,6 +11,7 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDir>
 #include <QFontComboBox>
 #include <QEvent>
 #include <QFrame>
@@ -63,6 +64,11 @@ const int kFormLabelWidth = 78;
 const int kFieldMaxWidth = 300;
 
 QString themeModeKey() { return QStringLiteral("themeMode"); }
+
+// 与 MainWindow.cpp 里同名常量必须完全一致：设置页和询问框共用这几个键。
+const QString kImportExportRememberKey = QStringLiteral("importExport/rememberChoice");
+const QString kImportExportExportImagesKey = QStringLiteral("importExport/exportWithImages");
+const QString kImportExportImportImagesKey = QStringLiteral("importExport/importWithImages");
 QString darkThemeKey() { return QStringLiteral("darkTheme"); }
 
 // 样式页底部的说明文字：解释“即时预览 + 取消不保存”的交互模型。
@@ -89,8 +95,11 @@ QString levelDisplayName(int level) {
 
 } // namespace
 
-MindMapSettingsDialog::MindMapSettingsDialog(MindMapNode* root, QWidget* parent)
-    : QDialog(parent), m_root(root) {
+MindMapSettingsDialog::MindMapSettingsDialog(MindMapNode* root,
+                                             const QList<PluginLoadRecord>& plugins,
+                                             const QList<PluginSettingsPage>& pluginPages,
+                                             QWidget* parent)
+    : QDialog(parent), m_root(root), m_plugins(plugins), m_pluginPages(pluginPages) {
     setWindowTitle(QStringLiteral("设置"));
     resize(880, 580);
     // 最小宽度要保证“导航 + 内容列 + 预览栏”都放得下（内容不足时页面会横向裁切），
@@ -211,10 +220,42 @@ void MindMapSettingsDialog::buildUi() {
     columns->setSpacing(16);
 
     m_pages = new QStackedWidget(content);
-    m_pages->addWidget(wrapPage(buildNodePage()));
-    m_pages->addWidget(wrapPage(buildParagraphPage()));
-    m_pages->addWidget(wrapPage(buildThemePage()));
-    m_pages->addWidget(wrapPage(buildOperationPage()));
+
+    // 页面定义一次成型：id、标题、副标题、「是否样式页（共享右侧预览）」。
+    // 以前这些信息散在 buildUi() 的 if 分支和 refreshLevelChrome() 的静态数组里，
+    // 加一页要改三处；现在只在这里追加一行。
+    m_pageDefs.clear();
+    m_pageDefs.append({QStringLiteral("node"), QStringLiteral("节点"),
+                       QStringLiteral("设置节点的外观、文字与分支配色。"), true,
+                       wrapPage(buildNodePage())});
+    m_pageDefs.append({QStringLiteral("paragraph"), QStringLiteral("段落"),
+                       QStringLiteral("控制节点内文本的排版方式。"), true,
+                       wrapPage(buildParagraphPage())});
+    m_pageDefs.append({QStringLiteral("theme"), QStringLiteral("主题"),
+                       QStringLiteral("选择应用的整体明暗外观。"), false,
+                       wrapPage(buildThemePage())});
+    m_pageDefs.append({QStringLiteral("operation"), QStringLiteral("操作"),
+                       QStringLiteral("调整画布交互与小地图的行为。"), false,
+                       wrapPage(buildOperationPage())});
+    m_pageDefs.append({QStringLiteral("plugins"), QStringLiteral("插件"),
+                       QStringLiteral("查看已安装的插件，并控制是否启用。"), false,
+                       wrapPage(buildPluginsPage())});
+
+    // 插件提供的整页追加在最后。每次打开设置窗口都重新索取一遍控件
+    // （契约要求插件 createSettingsPage() 必须新建，不能缓存）。
+    for (const PluginSettingsPage& page : m_pluginPages) {
+        if (!page.provider) continue;
+        QWidget* pluginPage = page.provider->createSettingsPage(content);
+        if (!pluginPage) continue;
+        const QString title = page.title.isEmpty() ? page.displayName : page.title;
+        m_pageDefs.append({page.pluginId, title,
+                           QStringLiteral("由插件 %1 提供。").arg(page.displayName), false,
+                           wrapPage(pluginPage)});
+    }
+
+    for (const SettingsPageDef& def : m_pageDefs) {
+        m_pages->addWidget(def.widget);
+    }
     columns->addWidget(m_pages, 1);
 
     m_previewPanel = buildPreviewPanel();
@@ -225,10 +266,8 @@ void MindMapSettingsDialog::buildUi() {
     rootLayout->addWidget(body, 1);
     rootLayout->addWidget(buildFooter());
 
-    const QStringList categories = {QStringLiteral("节点"), QStringLiteral("段落"),
-                                    QStringLiteral("主题"), QStringLiteral("操作")};
-    for (int i = 0; i < categories.size(); ++i) {
-        addNavItem(categories.at(i), i);
+    for (int i = 0; i < m_pageDefs.size(); ++i) {
+        addNavItem(m_pageDefs.at(i).title, i);
     }
 
     connect(m_nav, &QListWidget::currentRowChanged, this, [this](int) {
@@ -1203,8 +1242,194 @@ QWidget* MindMapSettingsDialog::buildOperationPage() {
                               "关闭：不显示小地图。"));
 
     layout->addWidget(miniMapCard);
+
+    // ---- 导入 / 导出：三个开关，从上到下「导出保留图片 / 导入保留图片 / 记住我的选择」 ----
+    // 卡片读写的就是主窗口写的那几个 QSettings 键，两边共用一套键名，
+    // 否则设置页里关掉记忆后主窗口还会继续按旧记忆走。
+    QGridLayout* importExportGrid = nullptr;
+    QWidget* importExportCard = createGroupCard(QStringLiteral("导入 / 导出"), &importExportGrid);
+
+    // 每行都是「标签 + 开关」，把开关包进一个左对齐的行容器里，
+    // 否则 ToggleSwitch 会被网格拉伸成一条长轨道。
+    const auto makeToggleRow = [page](ToggleSwitch** outToggle, const QString& objectName,
+                                      bool checked) {
+        auto* row = new QWidget(page);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+        auto* toggle = new ToggleSwitch(row);
+        toggle->setObjectName(objectName);
+        toggle->setCheckedInstant(checked);
+        rowLayout->addWidget(toggle, 0);
+        rowLayout->addStretch(1);
+        *outToggle = toggle;
+        return row;
+    };
+
+    QSettings importExportSettings;
+    addFormRow(importExportGrid, 0, QStringLiteral("导出大纲：保留图片"),
+               makeToggleRow(&m_importExportExportToggle,
+                             QStringLiteral("importExportExportToggle"),
+                             importExportSettings.value(kImportExportExportImagesKey, true).toBool()));
+    addFormRow(importExportGrid, 2, QStringLiteral("导入大纲：保留图片"),
+               makeToggleRow(&m_importExportImportToggle,
+                             QStringLiteral("importExportImportToggle"),
+                             importExportSettings.value(kImportExportImportImagesKey, true).toBool()));
+
+    // 说明只留这一句，挂在「记住我的选择」下面一行。
+    addFormRow(importExportGrid, 4, QStringLiteral("记住我的选择"),
+               makeToggleRow(&m_importExportRememberToggle,
+                             QStringLiteral("importExportRememberToggle"),
+                             importExportSettings.value(kImportExportRememberKey, false).toBool()),
+               QStringLiteral("打开后，导出 / 导入遇到图片不询问"));
+
+    layout->addWidget(importExportCard);
     layout->addStretch(1);
     return page;
+}
+
+QWidget* MindMapSettingsDialog::buildPluginsPage() {
+    auto* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(14);
+
+    QGridLayout* grid = nullptr;
+    QWidget* card = createGroupCard(QStringLiteral("已安装的插件"), &grid);
+    // 插件列表比表单行宽，默认 460 太窄会挤成一列，这里放开限制。
+    card->setMaximumWidth(QWIDGETSIZE_MAX);
+
+    m_pluginListContainer = new QWidget(page);
+    auto* listLayout = new QVBoxLayout(m_pluginListContainer);
+    listLayout->setContentsMargins(0, 0, 0, 0);
+    listLayout->setSpacing(14);
+    grid->addWidget(m_pluginListContainer, 0, 0, 1, 2);
+
+    layout->addWidget(card);
+
+    // 开关改动后在这里提示「重启生效」，平时隐藏。
+    m_pluginRestartHint = new QLabel(page);
+    m_pluginRestartHint->setObjectName(QStringLiteral("hintLabel"));
+    m_pluginRestartHint->setWordWrap(true);
+    m_pluginRestartHint->setVisible(false);
+    layout->addWidget(m_pluginRestartHint);
+
+    auto* note = makePageNote(page);
+    note->setText(QStringLiteral(
+        "插件以 dll 形式放在 leap.exe 同级的 plugins 文件夹里，安装或删除后需要重启 leap 才会生效。"
+        "右侧开关控制插件是否加载，改动同样在重启后生效。"));
+    layout->addWidget(note);
+
+    layout->addStretch(1);
+
+    refreshPluginRows();
+    return page;
+}
+
+QWidget* MindMapSettingsDialog::buildPluginRow(const PluginLoadRecord& record) {
+    auto* row = new QWidget(m_pluginListContainer);
+    auto* rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(12);
+
+    auto* textColumn = new QWidget(row);
+    auto* textLayout = new QVBoxLayout(textColumn);
+    textLayout->setContentsMargins(0, 0, 0, 0);
+    textLayout->setSpacing(2);
+
+    const QString name = record.displayName.isEmpty() ? record.id : record.displayName;
+    auto* nameLabel = new QLabel(name, textColumn);
+    QFont nameFont = nameLabel->font();
+    nameFont.setWeight(QFont::DemiBold);
+    nameLabel->setFont(nameFont);
+    nameLabel->setWordWrap(true);
+    textLayout->addWidget(nameLabel);
+
+    auto* pathLabel = new QLabel(QDir::toNativeSeparators(record.filePath), textColumn);
+    pathLabel->setObjectName(QStringLiteral("hintLabel"));
+    pathLabel->setWordWrap(true);
+    pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    textLayout->addWidget(pathLabel);
+
+    if (!record.loaded && !record.error.isEmpty()) {
+        auto* errorLabel = new QLabel(QStringLiteral("加载失败：%1").arg(record.error), textColumn);
+        errorLabel->setObjectName(QStringLiteral("hintLabel"));
+        errorLabel->setWordWrap(true);
+        errorLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        textLayout->addWidget(errorLabel);
+    } else if (record.disabled) {
+        auto* disabledLabel = new QLabel(QStringLiteral("已关闭，重启 leap 后该插件不会加载。"), textColumn);
+        disabledLabel->setObjectName(QStringLiteral("hintLabel"));
+        disabledLabel->setWordWrap(true);
+        textLayout->addWidget(disabledLabel);
+    }
+
+    rowLayout->addWidget(textColumn, 1);
+
+    // 启用 / 关闭开关。
+    // 加载失败的插件没有「启用」可言，开关保持禁用；能正常加载的（含被用户关掉的）
+    // 可以自由切换，改动写进 QSettings，下次启动生效。
+    auto* toggle = new ToggleSwitch(row);
+    const bool switchable = record.loaded || record.disabled;
+    toggle->setEnabled(switchable);
+    // 能切换的插件：开关表示「是否启用」；加载失败的插件没有启用可言，
+    // 统一显示为关闭，避免出现「加载失败却亮着绿灯」的错觉。
+    toggle->setCheckedInstant(switchable ? !record.disabled : false);
+    if (!switchable) {
+        toggle->setToolTip(QStringLiteral("插件加载失败，无法启用"));
+    } else {
+        toggle->setToolTip(record.disabled ? QStringLiteral("已关闭，勾选后重启 leap 生效")
+                                           : QStringLiteral("已启用，取消勾选后重启 leap 生效"));
+    }
+    if (switchable) {
+        connect(toggle, &QAbstractButton::toggled, this, [this, toggle, record](bool checked) {
+            PluginManager::setPluginDisabled(record.id, !checked);
+            toggle->setToolTip(checked ? QStringLiteral("已启用，取消勾选后重启 leap 生效")
+                                       : QStringLiteral("已关闭，勾选后重启 leap 生效"));
+            // 关掉/打开都只写配置，不在这里卸载 dll —— 运行期卸载插件注册过的
+            // 按钮会把界面留成悬空指针。重启是最稳的边界。
+            if (m_pluginRestartHint) {
+                m_pluginRestartHint->setText(
+                    QStringLiteral("改动已保存，重启 leap 后生效。"));
+                m_pluginRestartHint->setVisible(true);
+            }
+        });
+    }
+    rowLayout->addWidget(toggle, 0, Qt::AlignVCenter);
+    m_pluginToggles.append(toggle);
+
+    return row;
+}
+
+void MindMapSettingsDialog::refreshPluginRows() {
+    if (!m_pluginListContainer) return;
+
+    m_pluginToggles.clear();
+    if (auto* oldLayout = m_pluginListContainer->layout()) {
+        while (QLayoutItem* item = oldLayout->takeAt(0)) {
+            if (QWidget* widget = item->widget()) widget->deleteLater();
+            delete item;
+        }
+    }
+
+    auto* listLayout = qobject_cast<QVBoxLayout*>(m_pluginListContainer->layout());
+    if (!listLayout) {
+        listLayout = new QVBoxLayout(m_pluginListContainer);
+        listLayout->setContentsMargins(0, 0, 0, 0);
+        listLayout->setSpacing(14);
+    }
+
+    if (m_plugins.isEmpty()) {
+        auto* empty = new QLabel(QStringLiteral("还没有安装任何插件。"), m_pluginListContainer);
+        empty->setObjectName(QStringLiteral("hintLabel"));
+        empty->setWordWrap(true);
+        listLayout->addWidget(empty);
+    } else {
+        for (const PluginLoadRecord& record : m_plugins) {
+            listLayout->addWidget(buildPluginRow(record));
+        }
+    }
+    listLayout->addStretch(1);
 }
 
 QWidget* MindMapSettingsDialog::buildPreviewPanel() {
@@ -1273,6 +1498,13 @@ QWidget* MindMapSettingsDialog::buildFooter() {
     });
     connect(m_restoreButton, &QPushButton::clicked, this, &MindMapSettingsDialog::restoreLevelDefaults);
     return footer;
+}
+
+// 外部指定打开时停在哪一页（按导航项下标，0=节点 … 4=插件）。
+void MindMapSettingsDialog::setCurrentPage(int pageIndex) {
+    if (!m_nav) return;
+    if (pageIndex < 0 || pageIndex >= m_nav->count()) return;
+    m_nav->setCurrentRow(pageIndex);
 }
 
 void MindMapSettingsDialog::addNavItem(const QString& text, int pageIndex) {
@@ -1363,7 +1595,7 @@ void MindMapSettingsDialog::refreshPreview() {
     m_preview->setStyles(m_editStyles);
     m_preview->setActiveLevel(levelIndex());
     const bool rainbow = m_editStyles.rainbow.enabled;
-    m_preview->setRainbowPreview(rainbow, m_editStyles.rainbow.colors);
+    m_preview->setRainbowPreview(m_editStyles.rainbow);
     m_preview->setRainbowSelectedBranch(m_rainbowSelectedBranch);
     if (m_previewLevelLabel) {
         m_previewLevelLabel->setText(rainbow ? QStringLiteral("彩虹分支")
@@ -1372,24 +1604,20 @@ void MindMapSettingsDialog::refreshPreview() {
 }
 
 void MindMapSettingsDialog::refreshLevelChrome(int pageIndex) {
-    static const char* titles[] = {"节点", "段落", "主题", "操作"};
-    static const char* subtitles[] = {
-        "设置节点的外观、文字与分支配色。",
-        "控制节点内文本的排版方式。",
-        "选择应用的整体明暗外观。",
-        "调整画布交互与小地图的行为。"};
-
-    if (pageIndex >= 0 && pageIndex < 4) {
-        m_pageTitle->setText(QString::fromUtf8(titles[pageIndex]));
-        m_pageSubtitle->setText(QString::fromUtf8(subtitles[pageIndex]));
+    // 页头直接查数据表，不再有「标题数组 + 下标硬编码」那套。
+    if (pageIndex >= 0 && pageIndex < m_pageDefs.size()) {
+        const SettingsPageDef& def = m_pageDefs.at(pageIndex);
+        m_pageTitle->setText(def.title);
+        m_pageSubtitle->setText(def.subtitle);
+        // 是否显示右侧预览由「页的语义」决定，而不是由序号决定：
+        // 插件页插到前面时不会误显示预览面板。
+        m_previewPanel->setVisible(def.stylePage);
+        m_restoreButton->setVisible(def.stylePage);
+        if (def.stylePage) refreshPreview();
+    } else {
+        m_previewPanel->setVisible(false);
+        m_restoreButton->setVisible(false);
     }
-
-    // 前两页（节点 / 段落）都是按层级设置样式，共用右侧预览。
-    // 层级选择器已经搬进这两页的内容区，不再由这里控制可见性。
-    const bool stylePage = pageIndex >= 0 && pageIndex <= 1;
-    m_previewPanel->setVisible(stylePage);
-    m_restoreButton->setVisible(stylePage);
-    if (stylePage) refreshPreview();
 }
 
 void MindMapSettingsDialog::restoreLevelDefaults() {
@@ -1413,6 +1641,28 @@ void MindMapSettingsDialog::applyChanges() {
             != nextMode) {
             settings.setValue(QStringLiteral("minimapMode"), nextMode);
             emit miniMapModeChanged();
+        }
+    }
+
+    // 导入 / 导出三个开关：与其它项一样在「应用」时落盘。
+    // 保留图片 / 不保留图片两个开关在任何时候都落盘：它们既是「记住」时直接套用的
+    // 偏好，也是「每次询问」时弹窗的默认按钮，两种模式下都该以设置页为准。
+    if (m_importExportExportToggle) {
+        const bool keepImages = m_importExportExportToggle->isChecked();
+        if (settings.value(kImportExportExportImagesKey, true).toBool() != keepImages) {
+            settings.setValue(kImportExportExportImagesKey, keepImages);
+        }
+    }
+    if (m_importExportImportToggle) {
+        const bool keepImages = m_importExportImportToggle->isChecked();
+        if (settings.value(kImportExportImportImagesKey, true).toBool() != keepImages) {
+            settings.setValue(kImportExportImportImagesKey, keepImages);
+        }
+    }
+    if (m_importExportRememberToggle) {
+        const bool remember = m_importExportRememberToggle->isChecked();
+        if (settings.value(kImportExportRememberKey, false).toBool() != remember) {
+            settings.setValue(kImportExportRememberKey, remember);
         }
     }
 
@@ -1517,6 +1767,10 @@ void MindMapSettingsDialog::applyThemeToDialog() {
     // 开关与选中色块也用同一枚强调色，随主题一起换。
     m_accentColor = tokens.accent;
     if (m_rainbowToggle) m_rainbowToggle->setAccentColor(tokens.accent);
+    // 插件页的启用开关目前是禁用态（功能未落地），用灰一点的颜色区分。
+    for (ToggleSwitch* toggle : m_pluginToggles) {
+        if (toggle) toggle->setAccentColor(toggle->isEnabled() ? tokens.accent : tokens.textDisabled);
+    }
     refreshRainbowSwatches();
 
     applyDarkTitleBar();

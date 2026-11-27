@@ -44,6 +44,11 @@ static QJsonArray s_multiClipboardData;
 
 namespace {
 
+// 缩放的上下限。滚轮缩放本身不夹，但插件接口按百分比设置时必须夹住，
+// 否则一次 3000% 就把画布甩到不可用。
+constexpr int kMinZoomPercent = 20;
+constexpr int kMaxZoomPercent = 400;
+
 // LEAP_FRAME_LOG=<path> 时记录每一帧（paintEvent）的时间戳，退出时落盘为 CSV。
 // 值为 "1" 时写到系统临时目录的 leap_frames.csv。默认不启用，零开销。
 struct FrameLog {
@@ -394,10 +399,7 @@ void MindMapView::pasteMultiClipboardTo(MindMapNode* targetNode) {
         MindMapNode::s_undoStack->endMacro();
     } else {
         MindMapNode* root = targetNode->getRoot();
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
         scene()->update();
     }
 
@@ -437,10 +439,7 @@ void MindMapView::deleteSelectedNodes() {
             if (node->scene()) scene()->removeItem(node);
             node->setNodeSelected(false);
             MindMapNode* root = parent->getRoot();
-            root->clearEdges();
-            root->layoutTree(0, 0);
-            root->adjustLayout();
-            root->updateAllEdges();
+            relayout(root);
         }
         scene()->update();
     }
@@ -499,8 +498,70 @@ void MindMapView::panToSceneCenter(const QPointF& sceneCenter, bool animated) {
         qBound(verticalScrollBar()->minimum(), targetVertical, verticalScrollBar()->maximum()));
 }
 
+int MindMapView::miniMapSizePercent() const {
+    return m_miniMap ? m_miniMap->sizePercent() : 100;
+}
+
+void MindMapView::setMiniMapSizePercent(int percent) {
+    if (!m_miniMap) return;
+    if (m_miniMap->sizePercent() == qBound(MindMapMiniMap::kMinSizePercent, percent,
+                                           MindMapMiniMap::kMaxSizePercent)) {
+        return;
+    }
+    m_miniMap->setSizePercent(percent);
+    updateMiniMapGeometry();
+    m_miniMap->raise();
+}
+
+int MindMapView::zoomPercent() const {
+    return qRound(transform().m11() * 100.0);
+}
+
+void MindMapView::setZoomPercent(int percent) {
+    const int clamped = qBound(kMinZoomPercent, percent, kMaxZoomPercent);
+    const qreal target = clamped / 100.0;
+    const qreal current = transform().m11();
+    if (target <= 0.0 || qFuzzyCompare(current, target)) return;
+
+    // 锚点用 AnchorViewCenter：缩放前后「视口中心对应的场景点」不变，
+    // 不会把用户正在看的内容甩出屏幕。
+    const QGraphicsView::ViewportAnchor previousAnchor = resizeAnchor();
+    setResizeAnchor(QGraphicsView::AnchorViewCenter);
+    stopViewportAnimation();
+    const qreal factor = target / current;
+    scale(factor, factor);
+    setResizeAnchor(previousAnchor);
+    showMiniMapForViewportChange();
+    emit zoomChanged();
+}
+
+void MindMapView::fitToWindow() {
+    if (!scene()) return;
+    const QRectF bounds = scene()->itemsBoundingRect();
+    if (bounds.isEmpty()) return;
+
+    stopViewportAnimation();
+    fitInView(bounds, Qt::KeepAspectRatio);
+    // fitInView 可能把比例算到超出上下限，夹回来保持与滚轮缩放一致。
+    const qreal current = transform().m11();
+    if (current > 0.0) {
+        const int percent = qRound(current * 100.0);
+        if (percent < kMinZoomPercent || percent > kMaxZoomPercent) {
+            const int clamped = qBound(kMinZoomPercent, percent, kMaxZoomPercent);
+            scale(clamped / 100.0 / current, clamped / 100.0 / current);
+        }
+    }
+    showMiniMapForViewportChange();
+    emit zoomChanged();
+}
+
 void MindMapView::reloadMiniMapSettings() {
     if (!m_miniMap) return;
+
+    // 尺寸也得在这里恢复：小地图随 leap 启动重建，尺寸是持久化的。
+    m_miniMap->setSizePercent(
+        QSettings().value(QStringLiteral("minimapSizePercent"), 100).toInt());
+    updateMiniMapGeometry();
 
     const QString mode = QSettings()
         .value(QStringLiteral("minimapMode"), QStringLiteral("onMove"))
@@ -622,6 +683,37 @@ void MindMapView::ensureSceneRectContains() {
     QPointF oldCenter = mapToScene(viewport()->rect().center());
     scene()->setSceneRect(newRect);
     centerOn(oldCenter);
+}
+
+void MindMapView::relayoutKeepingViewport(MindMapNode* root) {
+    if (!root || !scene() || !viewport()) return;
+
+    // 正在跑的视野动画会覆盖下面的滚动条写入，先停下。
+    stopViewportAnimation();
+
+    // 用一个稳定的场景锚点记录「重排前它画在屏幕上的哪个位置」。
+    // 用根节点而不是视口中心，因为重排会改变整棵树的绝对坐标，
+    // 只有跟着某个具体 item 走，才能在重排后把它挪回原位。
+    const QPointF anchorViewBefore = mapFromScene(root->mapToScene(root->rect().center()));
+
+    // layoutTree() 的 y 参数语义是「子树顶部」，规范原点是 (0, 0)；
+    // 传入节点自身的 pos 会让根节点每次向下累积偏移。
+    root->clearEdges();
+    root->layoutTree(0, 0);
+    root->adjustLayout();
+    root->updateAllEdges();
+
+    // 场景矩形可能因此变大（只扩不缩），这步会重设 sceneRect 并尽量保持视野中心。
+    ensureSceneRectContains();
+
+    // 重排/sceneRect 变化都可能让内容整体位移，用滚动条把它挪回原位。
+    const QPointF anchorViewAfter = mapFromScene(root->mapToScene(root->rect().center()));
+    const QPoint delta = (anchorViewAfter - anchorViewBefore).toPoint();
+    if (delta.isNull()) return;
+
+    // scrollbar 的 setValue 自带边界钳制，避免自己算 min/max 出现不一致。
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() + delta.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() + delta.y());
 }
 
 void MindMapView::ensureNodeVisible(MindMapNode* node, qreal margin) {
@@ -905,7 +997,8 @@ void MindMapView::mousePressEvent(QMouseEvent* event) {
         // Keep the viewport stable while finishing the editor.  Finishing an
         // edit can rebuild text items, change the scene rect, or move focus;
         // none of those should scroll the view for a plain selection click.
-        const QPointF clickViewportCenter = mapToScene(viewport()->rect().center());
+        // finishEdit() 内部用 relayoutKeepingViewport() 把内容钉在原位，
+        // 所以这里不需要再记录/恢复视口中心。
         bool onEditingNode = false;
         auto* p = item;
         while (p) {
@@ -962,7 +1055,9 @@ void MindMapView::mousePressEvent(QMouseEvent* event) {
                 }
             }
             targetNode->setNodeSelected(true);
-            centerOn(clickViewportCenter);
+            // 不再 centerOn(clickViewportCenter)：finishEdit() 现在会用
+            // relayoutKeepingViewport() 把内容钉在原位，这里再拿重排前的
+            // 场景点去 centerOn 只会把视野二次推走。
             resetDragState();
             event->accept();
             return;
@@ -1398,10 +1493,9 @@ void MindMapView::mouseReleaseEvent(QMouseEvent* event) {
             // 【修改】只在释放时触发一次全局重排和视野调整
             MindMapNode* root = m_resizingNode->getRoot();
             if (root) {
-                root->clearEdges();
-                root->layoutTree(0, 0);
-                root->adjustLayout();
-                root->updateAllEdges();
+                // 重排会把根节点放回规范原点，必须走保持视口的版本，
+                // 否则每次拖完宽度画面都会整体位移。
+                relayoutKeepingViewport(root);
                 // 确保被调整的节点在视野中
                 ensureNodeVisible(m_resizingNode);
             }
@@ -1482,10 +1576,7 @@ void MindMapView::mouseReleaseEvent(QMouseEvent* event) {
                     }
                 }
                 MindMapNode* root = newParent->getRoot();
-                root->clearEdges();
-                root->layoutTree(0, 0);
-                root->adjustLayout();
-                root->updateAllEdges();
+                relayout(root);
                 if (scene()) scene()->update();
             }
         }
@@ -1643,17 +1734,11 @@ void MindMapView::keyPressEvent(QKeyEvent* event) {
                             imgBlock->imageItem()->setImageBlock(imgBlock);
                             targetNode->setSelectedBlock(imgBlock);
                             MindMapNode* root = targetNode->getRoot();
-                            root->clearEdges();
-                            root->layoutTree(0, 0);
-                            root->adjustLayout();
-                            root->updateAllEdges();
+                            relayout(root);
                             // 【新增】粘贴图片后，自动调整文本块宽度与节点一致
                             targetNode->autoFitTextBlockWidths();
                             targetNode->calcNodeSize();
-                            root->clearEdges();
-                            root->layoutTree(0, 0);
-                            root->adjustLayout();
-                            root->updateAllEdges();
+                            relayout(root);
                             if (scene()) scene()->update();
                         }
                         event->accept();
@@ -1688,10 +1773,7 @@ void MindMapView::keyPressEvent(QKeyEvent* event) {
                                 if (scene() && !child->scene()) scene()->addItem(child);
                             }
                             MindMapNode* root = node->getRoot();
-                            root->clearEdges();
-                            root->layoutTree(0, 0);
-                            root->adjustLayout();
-                            root->updateAllEdges();
+                            relayout(root);
                             if (scene()) scene()->update();
                             if (!scene()->views().isEmpty()) {
                                 if (auto* view = dynamic_cast<MindMapView*>(scene()->views().first())) {

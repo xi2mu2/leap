@@ -193,16 +193,35 @@ int main(int argc, char** argv) {
                 CHECK(!sameColor(preset.colors.at(i), preset.colors.at(j)));
             }
         }
-        // 任意一套都要能读：1 级字色对比度 >= 4.5，2 级浅底深字也 >= 4.5。
+        // 任意一套都要能读：按用户定的 2:1 下限校验（色彩方案优先，不再为凑 4.5 把字压成深色）。
+        // 这里要连预设自带的 branchStyles 一起带上，否则量到的是"没有白字规则"的派生色。
         const MindMapLevelStyles base;
+        MindMapRainbowStyle style;
+        style.enabled = true;
+        style.colors = preset.colors;
+        style.branchStyles = preset.branchStyles;
         for (int i = 0; i < preset.colors.size(); ++i) {
-            MindMapRainbowStyle style;
-            style.enabled = true;
-            style.colors = preset.colors;
             const MindMapStyle l1 = style.styleFor(base.firstChild, i, 1);
             const MindMapStyle l2 = style.styleFor(base.deeper, i, 2);
-            CHECK(MindMapRainbowStyle::contrastRatio(l1.fillColor, l1.textColor) >= 4.5);
-            CHECK(MindMapRainbowStyle::contrastRatio(l2.fillColor, l2.textColor) >= 4.5);
+            // 用户点名要白字的三套（经典彩虹/深靛/赤陶）由预设里的分支规则固定成纯白，
+            // 这时对比度可以低于 2:1 —— 是"按用户要求"而不是漏算，所以单独断言白色。
+            const MindMapRainbowBranchStyle rule =
+                preset.branchStyles.value(MindMapRainbowStyle::branchStyleKey(i, 1));
+            if (rule.hasText) {
+                CHECK(sameColor(l1.textColor, rule.textColor));
+            } else {
+                CHECK(MindMapRainbowStyle::contrastRatio(l1.fillColor, l1.textColor) >=
+                      kMinBranchTextContrast);
+            }
+            CHECK(MindMapRainbowStyle::contrastRatio(l2.fillColor, l2.textColor) >=
+                  kMinBranchTextContrast);
+        }
+
+        // 所有预设的 1 级都是"边框跟随填充"：纯色块，没有可见轮廓。
+        for (int i = 0; i < preset.colors.size(); ++i) {
+            const MindMapStyle l1 = style.styleFor(base.firstChild, i, 1);
+            CHECK(l1.borderFollowsFill);
+            CHECK(sameColor(l1.effectiveBorderColor(), l1.fillColor));
         }
     }
     // 预设名字唯一，界面上才分得清。
@@ -218,6 +237,59 @@ int main(int argc, char** argv) {
     CHECK(picked.presetIndex() == 2);
     picked.colors[0] = QColor("#010203");
     CHECK(picked.presetIndex() < 0);
+
+    // 用户点名：经典彩虹 / 深靛 / 赤陶 的 1 级子节点一律纯白字。
+    {
+        // 必须用 QStringLiteral 而不是 const char*：源码里的中文字面量是 UTF-8，
+        // 套 QLatin1String 会按 Latin-1 解码，比较永远不相等。
+        const QString whiteNames[] = {QStringLiteral("经典彩虹"), QStringLiteral("深靛"),
+                                      QStringLiteral("赤陶")};
+        int matched = 0;
+        const MindMapLevelStyles base;
+        for (const auto& preset : presets) {
+            bool wanted = false;
+            for (const QString& candidate : whiteNames) {
+                if (preset.name == candidate) wanted = true;
+            }
+            if (!wanted) continue;
+            ++matched;
+            MindMapRainbowStyle style;
+            style.enabled = true;
+            style.colors = preset.colors;
+            style.branchStyles = preset.branchStyles;
+            for (int i = 0; i < preset.colors.size(); ++i) {
+                const MindMapStyle l1 = style.styleFor(base.firstChild, i, 1);
+                CHECK(sameColor(l1.textColor, QColor(Qt::white)));
+                // 2 级浅底仍然走派生的深字，白字规则只管 1 级。
+                const MindMapStyle l2 = style.styleFor(base.deeper, i, 2);
+                CHECK(!sameColor(l2.textColor, QColor(Qt::white)));
+            }
+        }
+        CHECK(matched == 3);
+    }
+
+    // 「单色蓝渐变」整体前移一位，第 6 个补深蓝收口；原来那个几乎与白底同色的 #E7F5FF 已经不用了。
+    {
+        int gradientIndex = -1;
+        for (int i = 0; i < presets.size(); ++i) {
+            if (presets.at(i).name == QStringLiteral("单色蓝渐变")) gradientIndex = i;
+        }
+        CHECK(gradientIndex >= 0);
+        const QVector<QColor> expect = {QColor(0xA5, 0xD8, 0xFF), QColor(0x74, 0xC0, 0xFC),
+                                        QColor(0x33, 0x9A, 0xF0), QColor(0x1C, 0x7E, 0xD6),
+                                        QColor(0x18, 0x64, 0xAB), QColor(0x10, 0x41, 0x6F)};
+        const auto& actual = presets.at(gradientIndex).colors;
+        CHECK(actual.size() == expect.size());
+        for (int i = 0; i < expect.size(); ++i) {
+            CHECK(sameColor(actual.at(i), expect.at(i)));
+            CHECK(!sameColor(actual.at(i), QColor(0xE7, 0xF5, 0xFF)));
+        }
+        // 明度单调递增（由浅到深），否则"渐变"就断了。
+        for (int i = 1; i < actual.size(); ++i) {
+            CHECK(MindMapRainbowStyle::relativeLuminance(actual.at(i)) <
+                  MindMapRainbowStyle::relativeLuminance(actual.at(i - 1)));
+        }
+    }
 
     // 配色方案名跟着存档走；老文件缺 palette 键时回落到默认名字。
     MindMapRainbowStyle named;
@@ -322,6 +394,58 @@ int main(int argc, char** argv) {
             CHECK(followBack.styleFor(base, 0, 1).borderFollowsFill);
             CHECK(sameColor(followBack.styleFor(base, 0, 1).effectiveBorderColor(),
                             followBack.styleFor(base, 0, 1).fillColor));
+        }
+
+        // ---- 跨周期：序号折回后必须共用同一份颜色和覆盖 ----
+        // 界面只有 6 个色块，用户能调的就是第 1~6 个分支；第 7 个分支起只是颜色重复，
+        // 所以它的微调也必须跟着第 1 个分支走，否则会"前 6 个生效、第 7 个开始回预设"。
+        {
+            MindMapRainbowStyle cycle = MindMapRainbowStyle{};
+            cycle.enabled = true;
+            CHECK(cycle.wrappedBranchIndex(0) == 0);
+            CHECK(cycle.wrappedBranchIndex(5) == 5);
+            CHECK(cycle.wrappedBranchIndex(6) == 0);
+            CHECK(cycle.wrappedBranchIndex(7) == 1);
+            CHECK(cycle.wrappedBranchIndex(12) == 0);
+            CHECK(cycle.wrappedBranchIndex(-1) == 5);
+
+            MindMapRainbowBranchStyle mine;
+            mine.hasFill = true;
+            mine.fillColor = QColor("#0F1E2D");
+            // 只改第 1 个分支，第 7 / 13 个分支要跟着变。
+            cycle.setBranchStyle(0, 1, mine);
+            CHECK(sameColor(cycle.styleFor(base, 0, 1).fillColor, QColor("#0F1E2D")));
+            CHECK(sameColor(cycle.styleFor(base, 6, 1).fillColor, QColor("#0F1E2D")));
+            CHECK(sameColor(cycle.styleFor(base, 12, 1).fillColor, QColor("#0F1E2D")));
+            // 第 2 个分支的覆盖不能漏到第 8 个以外的地方。
+            CHECK(!sameColor(cycle.styleFor(base, 1, 1).fillColor, QColor("#0F1E2D")));
+            CHECK(!sameColor(cycle.styleFor(base, 7, 1).fillColor, QColor("#0F1E2D")));
+
+            // 反过来：直接给第 8 个分支写覆盖，落在周期内序号 1 上，第 2 个分支也看得到。
+            cycle.setBranchStyle(7, 1, mine);
+            CHECK(sameColor(cycle.styleFor(base, 1, 1).fillColor, QColor("#0F1E2D")));
+            CHECK(sameColor(cycle.styleFor(base, 7, 1).fillColor, QColor("#0F1E2D")));
+
+            // 2 级仍与 1 级分开：跨周期也不能串档。
+            MindMapRainbowBranchStyle deep;
+            deep.hasFill = true;
+            deep.fillColor = QColor("#AABBCC");
+            cycle.setBranchStyle(6, 2, deep);
+            CHECK(sameColor(cycle.styleFor(base, 6, 2).fillColor, QColor("#AABBCC")));
+            CHECK(sameColor(cycle.styleFor(base, 0, 2).fillColor, QColor("#AABBCC")));
+            CHECK(sameColor(cycle.styleFor(base, 12, 2).fillColor, QColor("#AABBCC")));
+            CHECK(!sameColor(cycle.styleFor(base, 6, 1).fillColor, QColor("#AABBCC")));
+
+            // 折回之后只占 6 个周期位，重建 6 个分支的调色不会撑出 12 份存档。
+            CHECK(cycle.branchStyles.size() == 3);  // 键 0、2、1
+            CHECK(cycle.toJson().value(QStringLiteral("branches")).toObject().size() == 3);
+            const MindMapRainbowStyle cycleBack = MindMapRainbowStyle::fromJson(cycle.toJson());
+            CHECK(sameColor(cycleBack.styleFor(base, 12, 1).fillColor, QColor("#0F1E2D")));
+            CHECK(sameColor(cycleBack.styleFor(base, 7, 1).fillColor, QColor("#0F1E2D")));
+
+            // 清空也必须按周期位清：清第 7 个分支等于清第 1 个。
+            cycle.setBranchStyle(6, 1, MindMapRainbowBranchStyle{});
+            CHECK(sameColor(cycle.styleFor(base, 0, 1).fillColor, clean.styleFor(base, 0, 1).fillColor));
         }
 
         // 序列化往返：覆盖与配色都要保住。

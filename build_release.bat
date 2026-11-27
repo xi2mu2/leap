@@ -96,6 +96,14 @@ if exist "%PROJECT_DIR%\LICENSE" copy /y "%PROJECT_DIR%\LICENSE" "%PACKAGE_DIR%\
 if exist "%PROJECT_DIR%\THIRD-PARTY-LICENSES.md" copy /y "%PROJECT_DIR%\THIRD-PARTY-LICENSES.md" "%PACKAGE_DIR%\" >nul
 if exist "%PROJECT_DIR%\leap.ico" copy /y "%PROJECT_DIR%\leap.ico" "%PACKAGE_DIR%\" >nul
 
+rem 插件目录：leap 启动时扫描 <exe 目录>\plugins，用户把插件 dll 连同目录一起拷进来。
+rem 安装包用 recursesubdirs 整目录复制，所以这里建好就会一起带进去。
+mkdir "%PACKAGE_DIR%\plugins"
+if exist "%PROJECT_DIR%\docs\PLUGINS.md" (
+    copy /y "%PROJECT_DIR%\docs\PLUGINS.md" "%PACKAGE_DIR%\plugins\README.md" >nul
+)
+echo 把插件文件夹（内含 dll）拷到此处，重启 leap 后生效。> "%PACKAGE_DIR%\plugins\安装说明.txt"
+
 echo [4/6] Deploy Qt runtime...
 "%QT_DIR%\bin\windeployqt.exe" --no-translations --qtpaths "%QT_DIR%\bin\qtpaths.exe" "%PACKAGE_DIR%\leap.exe"
 if errorlevel 1 exit /b 1

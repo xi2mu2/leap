@@ -32,7 +32,28 @@ void renderTheme(const QString& outputDir, const QString& mode, const QString& s
     settings.setValue(QStringLiteral("darkTheme"), mode == QLatin1String("dark"));
     settings.sync();
 
-    MindMapSettingsDialog dialog(nullptr);
+    // 插件页默认是空列表，用 SETTINGS_PREVIEW_PLUGINS 注入几条样本记录，
+    // 才能检查「名称 / 路径 / 错误原因 + 预留开关」这一行的排版。
+    QList<PluginLoadRecord> samplePlugins;
+    if (qEnvironmentVariableIsSet("SETTINGS_PREVIEW_PLUGINS")) {
+        PluginLoadRecord ok;
+        ok.id = QStringLiteral("hello");
+        ok.displayName = QStringLiteral("示例插件");
+        ok.filePath = QStringLiteral("C:/leap/plugins/hello/leap_hello_plugin.dll");
+        ok.loaded = true;
+        samplePlugins.append(ok);
+
+        PluginLoadRecord bad;
+        bad.id = QStringLiteral("broken");
+        bad.displayName = QStringLiteral("加载失败的插件");
+        bad.filePath = QStringLiteral("C:/leap/plugins/broken/broken.dll");
+        bad.loaded = false;
+        bad.error = QStringLiteral(
+            "dll 未实现 LeapPlugin 接口（请检查是否同版本 MinGW 11.2.0 + Qt 6.5.3 编译）");
+        samplePlugins.append(bad);
+    }
+
+    MindMapSettingsDialog dialog(nullptr, samplePlugins);
     dialog.resize(size);
     dialog.show();
     QApplication::processEvents();
@@ -42,7 +63,8 @@ void renderTheme(const QString& outputDir, const QString& mode, const QString& s
     if (!nav) return;
 
     const QStringList pageNames = {QStringLiteral("node"), QStringLiteral("paragraph"),
-                                   QStringLiteral("theme"), QStringLiteral("operation")};
+                                   QStringLiteral("theme"), QStringLiteral("operation"),
+                                   QStringLiteral("plugins")};
 
     if (qEnvironmentVariableIsSet("SETTINGS_PREVIEW_DEBUG")) {
         nav->setCurrentRow(0);

@@ -18,9 +18,12 @@ bool UiColors::s_isDark = false;
 #include "MindMapCommands.h"
 #include "MindMapPptExporter.h"
 #include "MindMapMermaid.h"
+#include "MindMapMarkdown.h"
 #include "FloatingEditToolbar.h"
 #include "MindMapSettingsDialog.h"
 #include "NewUserGuide.h"
+#include "PluginManager.h"
+#include "LeapHostBridge.h"
 #include <QGraphicsScene>
 #include <QJsonObject>
 #include <QVBoxLayout>
@@ -61,6 +64,8 @@ bool UiColors::s_isDark = false;
 #include <QMimeData>
 #include <QUrl>
 #include <QFrame>
+#include <QGridLayout>
+#include <QScrollArea>
 #include <QTextCursor>
 #include <QTextCharFormat>
 #include <QTextDocument>
@@ -68,7 +73,9 @@ bool UiColors::s_isDark = false;
 #include <QTextFragment>
 #include <QProgressDialog>
 #include <QColorDialog>
+#include <QCheckBox>
 #include <QUndoCommand>
+#include <QDesktopServices>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -277,6 +284,8 @@ MainWindow::MainWindow(QWidget* parent)
     fileBtn->setPopupMode(QToolButton::InstantPopup);
 
     QMenu* fileMenu = new QMenu(fileBtn);
+    // 【新增】提成成员，插件通过 LeapHost::addFileMenuAction 往里加菜单项
+    m_fileMenu = fileMenu;
     fileMenu->setStyleSheet(
         "QMenu {"
         "  background-color: #ffffff;"
@@ -299,6 +308,7 @@ MainWindow::MainWindow(QWidget* parent)
     fileMenu->addAction("另存为", this, &MainWindow::onSaveAs);
     fileMenu->addSeparator();
     QMenu* exportSubMenu = fileMenu->addMenu("导出");
+    m_exportSubMenu = exportSubMenu;
     exportSubMenu->setStyleSheet(fileMenu->styleSheet());
     exportSubMenu->addAction("导出 PNG", this, &MainWindow::onExportPng);
     exportSubMenu->addAction("导出 PDF", this, &MainWindow::onExportPdf);
@@ -306,7 +316,11 @@ MainWindow::MainWindow(QWidget* parent)
     exportSubMenu->addAction("导出 PPT", this, &MainWindow::onExportPpt);
     exportSubMenu->addAction(QStringLiteral("导出大纲"), this, &MainWindow::onExportOutline);
     exportSubMenu->addAction(QStringLiteral("导出 Mermaid"), this, &MainWindow::onExportMermaid);
-    fileMenu->addAction(QStringLiteral("从 Mermaid 导入…"), this, &MainWindow::onImportMermaid);
+    QMenu* importSubMenu = fileMenu->addMenu("导入");
+    importSubMenu->setStyleSheet(fileMenu->styleSheet());
+    importSubMenu->setToolTipsVisible(true);
+    importSubMenu->addAction(QStringLiteral("Mermaid"), this, &MainWindow::onImportMermaid);
+    importSubMenu->addAction(QStringLiteral("大纲(.md)"), this, &MainWindow::onImportOutline);
     fileBtn->setMenu(fileMenu);
 
     m_toolbarLayout->addWidget(fileBtn);
@@ -404,6 +418,18 @@ MainWindow::MainWindow(QWidget* parent)
     // --- 【新增】整理按钮 ---
     // 整理功能保留，但入口仅使用 Ctrl+Shift+A。
 
+    // --- 【新增】插件开关按钮 ---
+    // 插件入口统一收在左侧可滚动侧边栏里（不考虑工具栏容量），
+    // 这个按钮只负责开关侧边栏；没有加载到任何插件时隐藏。
+    m_pluginToggleBtn = new IconTextButton("plugin", "插件", 22, 10);
+    m_pluginToggleBtn->setCheckable(true);
+    m_pluginToggleBtn->setToolTip("显示或隐藏插件侧边栏");
+    connect(m_pluginToggleBtn, &QToolButton::toggled, this, [this](bool checked) {
+        setPluginSidebarVisible(checked);
+    });
+    m_pluginToggleBtn->setVisible(false);
+    m_toolbarLayout->addWidget(m_pluginToggleBtn);
+
     m_toolbarLayout->addStretch();
 
     // --- 7. 帮助 ---
@@ -493,8 +519,18 @@ MainWindow::MainWindow(QWidget* parent)
     m_toolbarLayout->addWidget(settingsBtn);
 
     // ========== 组装主布局 ==========
+    setupPluginSidebar();
     mainLayout->addWidget(m_toolbar);
-    mainLayout->addWidget(m_view, 1);
+    {
+        // 侧边栏与画布并排：侧边栏是兄弟控件而不是悬浮层，
+        // 这样不会遮住节点，也不需要手算它的位置。
+        auto* contentRow = new QHBoxLayout();
+        contentRow->setContentsMargins(0, 0, 0, 0);
+        contentRow->setSpacing(0);
+        contentRow->addWidget(m_pluginSidebar);
+        contentRow->addWidget(m_view, 1);
+        mainLayout->addLayout(contentRow, 1);
+    }
     setLayout(mainLayout);
 
     m_floatingEditToolbar = new FloatingEditToolbar(this);
@@ -561,6 +597,9 @@ MainWindow::MainWindow(QWidget* parent)
     UiColors::setDarkMode(savedDarkTheme);
     applyTheme(savedDarkTheme);
 
+    // 【新增】插件必须在主题确定之后加载：插件按钮创建时就要拿到正确配色。
+    setupPlugins();
+
     // “跟随系统”时，系统明暗在运行中变化也要生效。
     if (QStyleHints* hints = QGuiApplication::styleHints()) {
         connect(hints, &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
@@ -585,6 +624,183 @@ MainWindow::MainWindow(QWidget* parent)
     editCheckTimer->setInterval(100);
     connect(editCheckTimer, &QTimer::timeout, this, &MainWindow::updateEditButtonsVisibility);
     editCheckTimer->start();
+}
+
+// 【新增】建立左侧插件侧边栏的骨架（容器、滚动、底部「管理插件…」入口）。
+// 插件按钮本身不在这里创建 —— 由 LeapHostBridge 在插件 activate() 时填进去。
+void MainWindow::setupPluginSidebar() {
+    // 外层容器：上面是可滚动区（插件分组塞这里），底部是常驻入口。
+    m_pluginSidebar = new QWidget(this);
+    m_pluginSidebar->setObjectName(QStringLiteral("pluginSidebar"));
+    // 普通 QWidget 默认不绘制 QSS 里的 background-color，
+    // 不开这个属性的话侧边栏只会露出父窗口的灰底（浅色偏暗、深色不变黑）。
+    m_pluginSidebar->setAttribute(Qt::WA_StyledBackground, true);
+    // 每行只放一个按钮，宽度按「52px 按钮 + 左右内边距 + 滚动条」算。
+    m_pluginSidebar->setFixedWidth(112);
+    m_pluginSidebar->setVisible(false);
+    auto* sidebarLayout = new QVBoxLayout(m_pluginSidebar);
+    sidebarLayout->setContentsMargins(0, 0, 0, 0);
+    sidebarLayout->setSpacing(0);
+
+    m_pluginSidebarScroll = new QScrollArea(m_pluginSidebar);
+    m_pluginSidebarScroll->setFrameShape(QFrame::NoFrame);
+    m_pluginSidebarScroll->setWidgetResizable(true);
+    m_pluginSidebarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_pluginSidebarScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // 视口默认会用自己的 base 色铺底，盖掉侧边栏背景，这里让它透明。
+    m_pluginSidebarScroll->setAttribute(Qt::WA_StyledBackground, true);
+    if (m_pluginSidebarScroll->viewport()) {
+        m_pluginSidebarScroll->viewport()->setAutoFillBackground(false);
+    }
+
+    m_pluginSidebarBody = new QWidget();
+    m_pluginSidebarBody->setAttribute(Qt::WA_StyledBackground, true);
+    m_pluginSidebarLayout = new QVBoxLayout(m_pluginSidebarBody);
+    m_pluginSidebarLayout->setContentsMargins(12, 12, 12, 12);
+    m_pluginSidebarLayout->setSpacing(10);
+    // 靠上排列：内容少于视口高时不会把分组撑开摊平。
+    m_pluginSidebarLayout->setAlignment(Qt::AlignTop);
+    m_pluginSidebarScroll->setWidget(m_pluginSidebarBody);
+
+    // 底部常驻入口：插件全都不提供界面时，用户仍然能从这里进设置看清单。
+    auto* manageBtn = new QPushButton(QStringLiteral("管理插件…"), m_pluginSidebar);
+    manageBtn->setObjectName(QStringLiteral("ghostButton"));
+    manageBtn->setCursor(Qt::PointingHandCursor);
+    manageBtn->setToolTip(QStringLiteral("打开「设置 → 插件」"));
+    connect(manageBtn, &QPushButton::clicked, this, [this]() {
+        openSettingsAtPage(4);  // 4 = 设置里的「插件」页
+    });
+
+    sidebarLayout->addWidget(m_pluginSidebarScroll, 1);
+    sidebarLayout->addWidget(manageBtn);
+}
+
+// 【新增】开关侧边栏。工具栏按钮与「管理插件…」之外的入口都走这里。
+void MainWindow::setPluginSidebarVisible(bool visible) {
+    m_pluginSidebarVisible = visible;
+    if (m_pluginSidebar) {
+        m_pluginSidebar->setVisible(visible);
+    }
+    // 让按钮的选中态与侧边栏状态保持一致（例如代码里主动关闭时）。
+    if (m_pluginToggleBtn && m_pluginToggleBtn->isChecked() != visible) {
+        const QSignalBlocker blocker(m_pluginToggleBtn);
+        m_pluginToggleBtn->setChecked(visible);
+    }
+    // 打开态用主色下划线表示（与「高亮」按钮同一套现成样式）。
+    if (m_pluginToggleBtn) {
+        m_pluginToggleBtn->setAccentColor(visible ? UiColors::PRIMARY() : QColor());
+    }
+    // 侧边栏是兄弟控件，布局会自动让画布变窄；
+    // 这里补一次缩放下限计算，避免小窗口下画布被压到不可见。
+    if (m_view) {
+        m_view->update();
+    }
+}
+
+// 【新增】侧边栏自身的配色。applyTheme() 里调一次，插件加载完再调一次
+// （插件分组是加载时才创建的，早于它们的主题设置会落空）。
+void MainWindow::applyPluginSidebarTheme(bool dark) {
+    if (!m_pluginSidebar) return;
+
+    const QString scrollBarStyle = dark ? R"(
+        QScrollBar:vertical { background: #2d2d2d; width: 12px; margin: 0px; border-radius: 6px; }
+        QScrollBar::handle:vertical { background: #4a4a4a; min-height: 30px; border-radius: 6px; margin: 2px; }
+        QScrollBar::handle:vertical:hover { background: #5a5a5a; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+    )" : R"(
+        QScrollBar:vertical { background: #f0f0f0; width: 12px; margin: 0px; border-radius: 6px; }
+        QScrollBar::handle:vertical { background: #c0c0c0; min-height: 30px; border-radius: 6px; margin: 2px; }
+        QScrollBar::handle:vertical:hover { background: #a0a0a0; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+    )";
+
+    m_pluginSidebar->setStyleSheet(
+        QStringLiteral("QWidget#pluginSidebar { background-color: %1; border-right: 1px solid %2; }"
+                       "QScrollArea { background: transparent; border: 0; }"
+                       "QScrollArea > QWidget > QWidget { background: transparent; }")
+            .arg(dark ? QStringLiteral("#252526") : QStringLiteral("#ffffff"),
+                 dark ? QStringLiteral("#333333") : QStringLiteral("#e2e8f0"))
+        + scrollBarStyle);
+    if (m_pluginSidebarScroll) {
+        m_pluginSidebarScroll->setStyleSheet(QStringLiteral("background: transparent;") + scrollBarStyle);
+    }
+    if (m_pluginSidebarBody) {
+        m_pluginSidebarBody->setStyleSheet(QStringLiteral("background: transparent;"));
+    }
+    // 分组标题与「没有界面入口」的说明都是普通 QLabel，靠属性标记识别。
+    const auto labels = m_pluginSidebar->findChildren<QLabel*>();
+    for (auto* label : labels) {
+        if (label->property("leapPluginGroupTitle").toBool()) {
+            label->setStyleSheet(dark ? QStringLiteral("color: #9aa0a6;")
+                                      : QStringLiteral("color: #5f6368;"));
+        }
+    }
+}
+
+// 【新增】扫描 plugins/ 并激活插件。
+// 只在启动时执行一次：插件一律「重启生效」，不做热加载。
+void MainWindow::setupPlugins() {
+    m_pluginHost = new LeapHostBridge(this, m_pluginSidebarBody, m_fileMenu,
+                                      m_scene, m_undoStack, m_view, this);
+    m_pluginManager = new PluginManager();
+    m_pluginManager->loadAll(PluginManager::defaultPluginRoot(), m_pluginHost);
+    // 事件接收器要在加载完之后才拿得到（插件在 activate 里才有机会实现它）。
+    m_pluginHost->setEventSinks(m_pluginManager->eventSinks());
+    appendPluginExporters();
+
+    // 事件源接线：撤销栈变化 = 文档变了；场景选中变化 = 选中变了。
+    // 注意 QGraphicsScene::selectionChanged 之前没有人连，插件是第一个使用者。
+    if (m_undoStack) {
+        connect(m_undoStack, &QUndoStack::indexChanged, this, [this](int) {
+            if (m_pluginHost) m_pluginHost->notifyDocumentChanged();
+        });
+    }
+    if (m_scene) {
+        connect(m_scene, &QGraphicsScene::selectionChanged, this, [this]() {
+            if (!m_pluginHost) return;
+            bool hasSelection = false;
+            for (auto* item : m_scene->items()) {
+                if (auto* node = dynamic_cast<MindMapNode*>(item)) {
+                    if (node->isNodeSelected()) { hasSelection = true; break; }
+                }
+            }
+            m_pluginHost->notifySelectionChanged(hasSelection);
+        });
+    }
+
+    // 插件分组是加载时才建出来的，applyTheme() 早就跑过了，
+    // 这里补一次侧边栏配色，否则浅色模式下分组标题会是默认黑、深色下偏暗。
+    applyPluginSidebarTheme(UiColors::isDarkMode());
+
+    const bool hasPlugins = m_pluginManager->loadedCount() > 0;
+    // 没有加载到插件时把整个入口藏起来，避免工具栏出现一个点了没反应的按钮。
+    if (m_pluginToggleBtn) {
+        m_pluginToggleBtn->setVisible(hasPlugins);
+    }
+    if (!hasPlugins) {
+        setPluginSidebarVisible(false);
+        return;
+    }
+
+    // 恢复上次的开关状态（默认关闭，不打扰用户）。
+    QSettings settings;
+    const bool visible = settings.value(QStringLiteral("pluginSidebarVisible"), false).toBool();
+    setPluginSidebarVisible(visible);
+}
+
+MainWindow::~MainWindow() {
+    // 记住侧边栏开关状态，下次启动恢复。
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("pluginSidebarVisible"), m_pluginSidebarVisible);
+    }
+    // 先让插件有机会收手（断开自己连的信号），再销毁管理器。
+    // 注意 PluginManager 故意不卸载 dll —— 详见 PluginManager.cpp 的说明。
+    if (m_pluginManager) {
+        m_pluginManager->shutdown();
+        delete m_pluginManager;
+        m_pluginManager = nullptr;
+    }
 }
 
 // 【新增】更新编辑按钮显示状态
@@ -855,10 +1071,7 @@ void MainWindow::onAddSibling() {
         if (newNode) {
             m_scene->addItem(newNode);
             MindMapNode* root = selectedNode->getRoot();
-            root->clearEdges();
-            root->layoutTree(0, 0);
-            root->adjustLayout();
-            root->updateAllEdges();
+            relayout(root);
             selectedNode->setNodeSelected(false);
             newNode->setNodeSelected(true);
         }
@@ -892,10 +1105,7 @@ void MainWindow::onAddChild() {
         auto* newNode = new MindMapNode("", selectedNode);
         m_scene->addItem(newNode);
         MindMapNode* root = selectedNode->getRoot();
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
         selectedNode->setNodeSelected(false);
         newNode->setNodeSelected(true);
     }
@@ -909,10 +1119,7 @@ void MainWindow::onArrange() {
     // 【调试】打印当前根节点位置
     qDebug() << "[onArrange] Before: root pos =" << root->pos();
 
-    root->clearEdges();
-    root->layoutTree(0, 0);
-    root->adjustLayout();
-    root->updateAllEdges();
+    relayout(root);
 
     // 【调试】打印重排后根节点位置
     qDebug() << "[onArrange] After: root pos =" << root->pos();
@@ -923,9 +1130,18 @@ void MainWindow::onArrange() {
 }
 
 void MainWindow::onSettings() {
+    openSettingsAtPage(0);
+}
+
+// pageIndex：0=节点 1=段落 2=主题 3=操作 4=插件（与设置窗口左侧导航顺序一致）。
+void MainWindow::openSettingsAtPage(int pageIndex) {
     MindMapNode* root = findRoot();
     if (!root) return;
-    MindMapSettingsDialog dialog(root, this);
+    MindMapSettingsDialog dialog(
+        root,
+        m_pluginManager ? m_pluginManager->records() : QList<PluginLoadRecord>(),
+        m_pluginManager ? m_pluginManager->settingsPages() : QList<PluginSettingsPage>(),
+        this);
     connect(&dialog, &MindMapSettingsDialog::themeChanged, this, [this](bool dark) {
         UiColors::setDarkMode(dark);
         applyTheme(dark);
@@ -942,7 +1158,10 @@ void MainWindow::onSettings() {
         // 节点尺寸变化会触发布局，绝对场景坐标不再对应原来的视觉内容。
         const QPointF rootOffset = oldRootCenter - oldSceneCenter;
         root->clearEdges();
-        root->layoutTree(root->pos().x(), root->pos().y());
+        // layoutTree() 的 y 参数是「子树顶部」，规范原点是 (0, 0)。
+        // 传入 root->pos() 会让根节点每次刷新都向下累积偏移，最终在别处
+        // 重建布局时一次性弹回；下面的 rootOffset 补偿已经把视觉接住了。
+        root->layoutTree(0, 0);
         root->adjustLayout();
         // adjustLayout 可能再次移动整棵子树，必须在最终位置上重建连线。
         root->clearEdges();
@@ -980,6 +1199,7 @@ void MainWindow::onSettings() {
     connect(&dialog, &MindMapSettingsDialog::miniMapModeChanged, this, [this]() {
         if (m_view) m_view->reloadMiniMapSettings();
     });
+    dialog.setCurrentPage(pageIndex);
     dialog.exec();
 }
 
@@ -1136,6 +1356,10 @@ void MainWindow::updateToolbarButtonStyles() {
             }
         }
     }
+    // 侧边栏里的插件按钮不在工具栏布局里，单独作为根节点入队。
+    if (m_pluginSidebar) {
+        queue.enqueue(m_pluginSidebar);
+    }
 
     while (!queue.isEmpty()) {
         QObject* obj = queue.dequeue();
@@ -1203,6 +1427,7 @@ void MainWindow::onNew() {
     setupDefaultTree();
     m_view->setCurrentFilePath(QString(""));
     updateTitle();
+    if (m_pluginHost) m_pluginHost->notifyDocumentLoaded(QString());
 }
 
 void MainWindow::onSave() {
@@ -1257,9 +1482,12 @@ bool MainWindow::performSave(const QString& filePath) {
 }
 
 bool MainWindow::openFile(const QString& filePath) {
-    // .mmd / .mermaid 走导入路径，其余仍按 leap 文档打开
+    // .mmd / .mermaid / .md 走导入路径，其余仍按 leap 文档打开
     if (MindMapMermaidImporter::isMermaidFilePath(filePath)) {
         return performImportMermaid(filePath);
+    }
+    if (MindMapMarkdownImporter::isMarkdownFilePath(filePath)) {
+        return performImportOutline(filePath);
     }
     return performOpen(filePath);
 }
@@ -1394,6 +1622,7 @@ bool MainWindow::performOpen(const QString& filePath) {
         m_undoStack->push(new QUndoCommand(QStringLiteral("恢复自动备份")));
     }
     updateTitle();
+    if (m_pluginHost) m_pluginHost->notifyDocumentLoaded(filePath);
     return true;
 }
 
@@ -1542,7 +1771,7 @@ void MainWindow::onOpen() {
 
     QString filePath = QFileDialog::getOpenFileName(this, QString("打开思维导图"),
                                                     QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-                                                    MindMapMermaidImporter::openFileFilter());
+                                                    MindMapMarkdownImporter::openFileFilter());
     if (filePath.isEmpty()) return;
 
     openFile(filePath);
@@ -1554,7 +1783,8 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
         for (const QUrl& url : urls) {
             QString filePath = url.toLocalFile();
             if (filePath.endsWith(".leap", Qt::CaseInsensitive) ||
-                MindMapMermaidImporter::isMermaidFilePath(filePath)) {
+                MindMapMermaidImporter::isMermaidFilePath(filePath) ||
+                MindMapMarkdownImporter::isMarkdownFilePath(filePath)) {
                 event->acceptProposedAction();
                 return;
             }
@@ -1568,7 +1798,8 @@ void MainWindow::dropEvent(QDropEvent* event) {
     for (const QUrl& url : urls) {
         QString filePath = url.toLocalFile();
         if (filePath.endsWith(".leap", Qt::CaseInsensitive) ||
-            MindMapMermaidImporter::isMermaidFilePath(filePath)) {
+            MindMapMermaidImporter::isMermaidFilePath(filePath) ||
+            MindMapMarkdownImporter::isMarkdownFilePath(filePath)) {
             openFile(filePath);
             event->acceptProposedAction();
             return;
@@ -1620,17 +1851,11 @@ void MainWindow::onInsertFormula() {
                     formulaBlock->pixmapItem()->setFormulaBlock(formulaBlock);
                     targetNode->setSelectedBlock(formulaBlock);
                     MindMapNode* root = targetNode->getRoot();
-                    root->clearEdges();
-                    root->layoutTree(0, 0);
-                    root->adjustLayout();
-                    root->updateAllEdges();
+                    relayout(root);
                     // 【新增】插入公式后，自动调整文本块宽度与节点一致
                     targetNode->autoFitTextBlockWidths();
                     targetNode->calcNodeSize();
-                    root->clearEdges();
-                    root->layoutTree(0, 0);
-                    root->adjustLayout();
-                    root->updateAllEdges();
+                    relayout(root);
                     if (m_scene) m_scene->update();
                 }
             }
@@ -1688,17 +1913,11 @@ void MainWindow::onInsertImage() {
         imgBlock->imageItem()->setImageBlock(imgBlock);
         targetNode->setSelectedBlock(imgBlock);
         MindMapNode* root = targetNode->getRoot();
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
         // 【新增】插入图片后，自动调整文本块宽度与节点一致
         targetNode->autoFitTextBlockWidths();
         targetNode->calcNodeSize();
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
         if (m_scene) m_scene->update();
     }
 }
@@ -1708,9 +1927,11 @@ void MainWindow::onHelp() {
     dialog.setWindowTitle(QStringLiteral("帮助"));
     auto* layout = new QVBoxLayout(&dialog);
     auto* guideButton = new QPushButton(QStringLiteral("入门指引"), &dialog);
+    auto* pluginDirButton = new QPushButton(QStringLiteral("打开插件目录"), &dialog);
     auto* closeButton = new QPushButton(QStringLiteral("关闭"), &dialog);
     auto* buttons = new QHBoxLayout();
     buttons->addStretch();
+    buttons->addWidget(pluginDirButton);
     buttons->addWidget(guideButton);
     buttons->addWidget(closeButton);
     auto* helpText = new QLabel(QStringLiteral(
@@ -1723,10 +1944,39 @@ void MainWindow::onHelp() {
         "<b>Ctrl+S</b> - 保存 <br>"), &dialog);
     helpText->setWordWrap(true);
     layout->addWidget(helpText);
+
+    // 【新增】插件清单：让用户能确认「插件到底装上没有」。
+    // 加载失败也列出来并给出原因，否则用户只能瞎猜。
+    if (m_pluginManager && !m_pluginManager->records().isEmpty()) {
+        QString pluginHtml;
+        for (const auto& record : m_pluginManager->records()) {
+            const QString name = record.displayName.isEmpty() ? record.id : record.displayName;
+            if (record.loaded) {
+                pluginHtml += QStringLiteral("<br><b>%1</b> — 已加载").arg(name.toHtmlEscaped());
+            } else if (record.disabled) {
+                pluginHtml += QStringLiteral("<br><b>%1</b> — 已关闭（可在设置 → 插件里重新启用）")
+                                  .arg(name.toHtmlEscaped());
+            } else {
+                pluginHtml += QStringLiteral("<br><b>%1</b> — 加载失败：%2")
+                                  .arg(name.toHtmlEscaped(), record.error.toHtmlEscaped());
+            }
+        }
+        auto* pluginLabel = new QLabel(QStringLiteral("<b>插件</b>%1").arg(pluginHtml), &dialog);
+        pluginLabel->setWordWrap(true);
+        pluginLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(pluginLabel);
+    }
+
     layout->addLayout(buttons);
     bool replay = false;
     connect(guideButton, &QPushButton::clicked, &dialog, [&] { replay = true; dialog.accept(); });
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(pluginDirButton, &QPushButton::clicked, &dialog, [this] {
+        // 目录可能还不存在（用户没装过插件），先确保有，再交给系统资源管理器。
+        const QString dir = PluginManager::defaultPluginRoot();
+        QDir().mkpath(dir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
     dialog.exec();
     if (replay) QTimer::singleShot(0, this, &MainWindow::startNewUserGuide);
 }
@@ -1823,61 +2073,177 @@ void MainWindow::onExportOutline() {
         QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("没有可导出的节点"));
         return;
     }
+
+    // 先按「仅文字」算一遍：既有完整正文骨架，也能拿到图片张数。
+    // 树里没有图片就不用问，用户也不会被多余的对话框打断。
+    const MarkdownExportResult textOnly = MindMapMarkdownExporter::toMarkdown(root, false);
+
+    int exportMode = 1; // 1 = 仅文字，2 = 连同图片
+    if (textOnly.imageCount > 0) {
+        qint64 imageBytes = 0;
+        std::function<void(MindMapNode*)> sumImageBytes = [&](MindMapNode* node) {
+            for (MindMapBlock* block : node->blocks()) {
+                if (block->type() != BlockType::Image) continue;
+                const QImage image = static_cast<ImageBlock*>(block)->originalImage();
+                if (!image.isNull()) imageBytes += image.sizeInBytes();
+            }
+            for (MindMapNode* child : node->childNodes()) sumImageBytes(child);
+        };
+        sumImageBytes(root);
+
+        bool remember = false;
+        const int choice = askImageExportChoice(textOnly.imageCount, imageBytes, &remember);
+        if (choice == 0) return;
+        exportMode = choice;
+    }
+
     const QString currentPath = m_view->currentFilePath();
     const QString defaultPath = currentPath.isEmpty()
         ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/大纲.md")
         : QFileInfo(currentPath).absolutePath() + QStringLiteral("/") +
           QFileInfo(currentPath).completeBaseName() + QStringLiteral(".md");
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出大纲"),
-                                               defaultPath, QStringLiteral("Markdown (*.md)"));
+                                               defaultPath, MindMapMarkdownImporter::fileFilter());
     if (path.isEmpty()) return;
-    if (!path.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) path += QStringLiteral(".md");
+    if (!MindMapMarkdownImporter::isMarkdownFilePath(path)) path += QStringLiteral(".md");
 
-    auto escapeText = [](const QString& plain) {
-        QString escaped;
-        for (QChar ch : plain) {
-            if (QStringLiteral("\\`*_{}[]<>()#+-.!|>$").contains(ch))
-                escaped += QLatin1Char('\\');
-            escaped += ch;
-        }
-        return escaped;
-    };
-    QString markdown;
-    std::function<void(MindMapNode*, int)> appendNode;
-    appendNode = [&](MindMapNode* node, int depth) {
-        QStringList lines;
-        for (MindMapBlock* block : node->blocks()) {
-            if (block->type() == BlockType::Text) {
-                QString text = static_cast<TextBlock*>(block)->toPlainText();
-                text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
-                text.replace(QChar(0x2028), QLatin1Char('\n'));
-                text.replace(QChar(0x2029), QLatin1Char('\n'));
-                for (const QString& line : text.split(QLatin1Char('\n')))
-                    lines.append(escapeText(line));
-            } else if (block->type() == BlockType::Formula) {
-                lines.append(QStringLiteral("$$"));
-                lines.append(static_cast<FormulaBlock*>(block)->latexCode().split(QLatin1Char('\n')));
-                lines.append(QStringLiteral("$$"));
+    const bool withImages = (exportMode == 2) && textOnly.imageCount > 0;
+    const MarkdownExportResult result =
+        withImages ? MindMapMarkdownExporter::toMarkdown(root, true) : textOnly;
+
+    QString reportPath = path;
+    if (withImages && !result.images.isEmpty()) {
+        // 连同图片导出：建同名文件夹 {名称}/，里面放 {名称}.md + image_00N.png。
+        // 先整体写到 {名称}.tmp/，写完再提交，避免半路失败留下一地半成品。
+        const QFileInfo info(path);
+        const QString parentDir = info.absolutePath();
+        const QString baseName = info.completeBaseName();
+        QDir parent(parentDir);
+        const QString targetDir = parent.filePath(baseName);
+        const QString tmpDir = parent.filePath(baseName + QStringLiteral(".tmp"));
+
+        bool mergeIntoExisting = false;
+        QDir existing(targetDir);
+        if (existing.exists()) {
+            QMessageBox box(this);
+            box.setWindowTitle(QStringLiteral("导出目录已存在"));
+            box.setText(QStringLiteral("“%1”文件夹已经存在。").arg(baseName));
+            box.setInformativeText(
+                QStringLiteral("合并：保留文件夹里的其它文件，只覆盖同名的 .md 与图片。\n"
+                               "全部替换：先删除整个文件夹再重新写入。"));
+            QPushButton* mergeButton = box.addButton(QStringLiteral("合并"), QMessageBox::AcceptRole);
+            QPushButton* replaceButton = box.addButton(QStringLiteral("全部替换"),
+                                                      QMessageBox::DestructiveRole);
+            box.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+            box.exec();
+            if (box.clickedButton() != mergeButton && box.clickedButton() != replaceButton) return;
+            mergeIntoExisting = (box.clickedButton() == mergeButton);
+
+            if (!mergeIntoExisting) {
+                const auto confirm = QMessageBox::question(
+                    this, QStringLiteral("确认替换"),
+                    QStringLiteral("整个“%1”文件夹会被删除后重写，里面的其它文件也会一起消失。\n"
+                                   "确定继续吗？").arg(baseName),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (confirm != QMessageBox::Yes) return;
             }
         }
-        while (!lines.isEmpty() && lines.first().isEmpty()) lines.removeFirst();
-        while (!lines.isEmpty() && lines.last().isEmpty()) lines.removeLast();
-        if (lines.isEmpty()) lines.append(QStringLiteral("（空节点）"));
-        const QString indent(depth * 4, QLatin1Char(' '));
-        markdown += indent + QStringLiteral("- ") + lines.first() + QLatin1Char('\n');
-        for (int i = 1; i < lines.size(); ++i)
-            markdown += indent + QStringLiteral("  ") + lines[i] + QLatin1Char('\n');
-        for (MindMapNode* child : node->childNodes()) appendNode(child, depth + 1);
-    };
-    appendNode(root, 0);
-    QSaveFile file(path);
-    const QByteArray data = markdown.toUtf8();
-    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
-        QMessageBox::warning(this, QStringLiteral("导出失败"), file.errorString());
-        return;
+
+        if (QDir(tmpDir).exists()) QDir(tmpDir).removeRecursively();
+        if (!parent.mkpath(baseName + QStringLiteral(".tmp"))) {
+            QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                 QStringLiteral("无法创建临时目录：\n%1").arg(tmpDir));
+            return;
+        }
+
+        auto cleanupTmp = [&tmpDir]() { QDir(tmpDir).removeRecursively(); };
+
+        const QString tmpMdPath = QDir(tmpDir).filePath(baseName + QStringLiteral(".md"));
+        {
+            QSaveFile file(tmpMdPath);
+            const QByteArray data = result.text.toUtf8();
+            if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() ||
+                !file.commit()) {
+                const QString reason = file.errorString();
+                cleanupTmp();
+                QMessageBox::warning(this, QStringLiteral("导出失败"), reason);
+                return;
+            }
+        }
+        for (const MarkdownImageAsset& asset : result.images) {
+            const QString imagePath = QDir(tmpDir).filePath(asset.fileName);
+            if (!asset.image.save(imagePath, "PNG")) {
+                cleanupTmp();
+                QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                     QStringLiteral("无法写入图片：\n%1").arg(imagePath));
+                return;
+            }
+        }
+
+        if (mergeIntoExisting) {
+            if (!parent.mkpath(baseName)) {
+                cleanupTmp();
+                QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                     QStringLiteral("无法创建目录：\n%1").arg(targetDir));
+                return;
+            }
+            QStringList files = QDir(tmpDir).entryList(QDir::Files);
+            files.append(QString());
+            files.removeLast();
+            bool ok = true;
+            for (const QString& name : files) {
+                const QString from = QDir(tmpDir).filePath(name);
+                const QString to = QDir(targetDir).filePath(name);
+                QFile::remove(to);
+                if (!QFile::copy(from, to)) {
+                    ok = false;
+                    break;
+                }
+            }
+            cleanupTmp();
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                     QStringLiteral("无法把文件写进：\n%1").arg(targetDir));
+                return;
+            }
+        } else {
+            if (QDir(targetDir).exists()) QDir(targetDir).removeRecursively();
+            bool moved = QDir().rename(tmpDir, targetDir);
+            if (!moved && parent.mkpath(baseName)) {
+                // rename 在跨盘或占用时可能失败，退化成逐个复制
+                moved = true;
+                const QStringList files = QDir(tmpDir).entryList(QDir::Files);
+                for (const QString& name : files) {
+                    if (!QFile::copy(QDir(tmpDir).filePath(name), QDir(targetDir).filePath(name))) {
+                        moved = false;
+                        break;
+                    }
+                }
+                if (moved) cleanupTmp();
+            }
+            if (!moved) {
+                cleanupTmp();
+                QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                     QStringLiteral("无法写入目录：\n%1").arg(targetDir));
+                return;
+            }
+        }
+        reportPath = QDir(targetDir).filePath(baseName + QStringLiteral(".md"));
+    } else {
+        QSaveFile file(path);
+        const QByteArray data = result.text.toUtf8();
+        if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+            QMessageBox::warning(this, QStringLiteral("导出失败"), file.errorString());
+            return;
+        }
     }
-    QMessageBox::information(this, QStringLiteral("导出成功"),
-                             QStringLiteral("已保存到：%1").arg(path));
+
+    QString message = QStringLiteral("已保存到：%1").arg(reportPath);
+    if (!result.warnings.isEmpty()) {
+        message += QStringLiteral("\n\n以下内容无法完整表达：\n· ") +
+                   result.warnings.join(QStringLiteral("\n· "));
+    }
+    QMessageBox::information(this, QStringLiteral("导出成功"), message);
 }
 
 void MainWindow::onImportMermaid() {
@@ -1977,6 +2343,7 @@ bool MainWindow::performImportMermaid(const QString& filePath) {
     m_view->setCurrentFilePath(QString());
     m_undoStack->push(new QUndoCommand(QStringLiteral("从 Mermaid 导入")));
     updateTitle();
+    if (m_pluginHost) m_pluginHost->notifyDocumentLoaded(QString());
 
     QString message = QStringLiteral("已从 %1 导入。\n\n注意：这份文档还没有保存成 leap 文件，"
                                      "保存时请另选位置。")
@@ -1987,6 +2354,269 @@ bool MainWindow::performImportMermaid(const QString& filePath) {
     }
     QMessageBox::information(this, QStringLiteral("导入完成"), message);
     return true;
+}
+
+namespace {
+// 「导入 / 导出」的记忆选择与主题、小地图等设置放在同一套 QSettings 里。
+const QString kImportExportRememberKey = QStringLiteral("importExport/rememberChoice");
+const QString kImportExportExportImagesKey = QStringLiteral("importExport/exportWithImages");
+const QString kImportExportImportImagesKey = QStringLiteral("importExport/importWithImages");
+
+QString formatByteSize(qint64 bytes) {
+    if (bytes < 1024) return QStringLiteral("%1 B").arg(bytes);
+    if (bytes < 1024 * 1024) return QStringLiteral("%1 KB").arg(bytes / 1024.0, 0, 'f', 0);
+    return QStringLiteral("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+}
+} // namespace
+
+int MainWindow::askImageExportChoice(int imageCount, qint64 imageBytes, bool* remember) {
+    if (remember) *remember = false;
+    QSettings settings(ORG_NAME, QString("leap"));
+    if (settings.value(kImportExportRememberKey, false).toBool()) {
+        // 记忆值为真表示「保留图片」，为假表示「仅文字」；取消永远需要用户主动点。
+        return settings.value(kImportExportExportImagesKey, true).toBool() ? 2 : 1;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("导出图片"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("这篇导图里有 %1 张图片，要一起导出吗？").arg(imageCount));
+    // 弹窗只留一句问话与按钮，两个选项各自意味着什么由设置页的开关说明，
+    // 不再在中间铺两段解释文字。
+    if (imageCount >= 50 || imageBytes >= 200LL * 1024 * 1024) {
+        box.setInformativeText(
+            QStringLiteral("图片较多（%1 张，约 %2），导出可能需要较长时间。")
+                .arg(imageCount)
+                .arg(formatByteSize(imageBytes)));
+    }
+    QPushButton* keepButton = box.addButton(QStringLiteral("保留图片"), QMessageBox::AcceptRole);
+    QPushButton* textOnlyButton = box.addButton(QStringLiteral("仅文字"), QMessageBox::ActionRole);
+    box.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+    // 默认按钮跟着设置页的「导出大纲：保留图片」开关走：不记住时它就是用户的偏好。
+    box.setDefaultButton(
+        settings.value(kImportExportExportImagesKey, true).toBool() ? keepButton : textOnlyButton);
+    auto* rememberBox = new QCheckBox(QStringLiteral("记住我的选择，以后不再询问"));
+    box.setCheckBox(rememberBox);
+    box.exec();
+
+    if (box.clickedButton() == keepButton) {
+        if (rememberBox->isChecked()) {
+            settings.setValue(kImportExportRememberKey, true);
+            settings.setValue(kImportExportExportImagesKey, true);
+        }
+        if (remember) *remember = rememberBox->isChecked();
+        return 2;
+    }
+    // 关窗口等同于取消：既不按「保留图片」也不按「仅文字」。
+    if (box.clickedButton() == textOnlyButton) {
+        if (rememberBox->isChecked()) {
+            settings.setValue(kImportExportRememberKey, true);
+            settings.setValue(kImportExportExportImagesKey, false);
+        }
+        if (remember) *remember = rememberBox->isChecked();
+        return 1;
+    }
+    return 0;
+}
+
+int MainWindow::askImageImportChoice(int imageCount, bool* remember) {
+    if (remember) *remember = false;
+    QSettings settings(ORG_NAME, QString("leap"));
+    if (settings.value(kImportExportRememberKey, false).toBool()) {
+        return settings.value(kImportExportImportImagesKey, true).toBool() ? 2 : 1;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("导入图片"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("这个大纲里引用了 %1 张图片，要一起导入吗？").arg(imageCount));
+    QPushButton* embedButton = box.addButton(QStringLiteral("嵌入图片"), QMessageBox::AcceptRole);
+    QPushButton* textOnlyButton = box.addButton(QStringLiteral("仅保留文字"), QMessageBox::ActionRole);
+    box.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+    // 默认按钮跟着设置页的「导入大纲：保留图片」开关走。
+    box.setDefaultButton(
+        settings.value(kImportExportImportImagesKey, true).toBool() ? embedButton : textOnlyButton);
+    auto* rememberBox = new QCheckBox(QStringLiteral("记住我的选择，以后不再询问"));
+    box.setCheckBox(rememberBox);
+    box.exec();
+
+    if (box.clickedButton() == embedButton) {
+        if (rememberBox->isChecked()) {
+            settings.setValue(kImportExportRememberKey, true);
+            settings.setValue(kImportExportImportImagesKey, true);
+        }
+        if (remember) *remember = rememberBox->isChecked();
+        return 2;
+    }
+    if (box.clickedButton() == textOnlyButton) {
+        if (rememberBox->isChecked()) {
+            settings.setValue(kImportExportRememberKey, true);
+            settings.setValue(kImportExportImportImagesKey, false);
+        }
+        if (remember) *remember = rememberBox->isChecked();
+        return 1;
+    }
+    return 0;
+}
+
+bool MainWindow::replaceDocumentWithJson(const QJsonObject& rootJson, const QString& sourceFileName,
+                                         const QString& actionLabel, const QStringList& warnings) {
+    auto choice = askSaveChanges();
+    if (choice == MainWindow::SaveChoice::Cancelled) return false;
+    if (choice == MainWindow::SaveChoice::Discarded) {
+        deleteBackupForFile(m_view->currentFilePath());
+    }
+
+    QJsonObject previousDocument;
+    const QString previousFilePath = m_view->currentFilePath();
+    if (MindMapNode* previousRoot = findRoot()) {
+        previousDocument = MindMapIO::serialize(previousRoot);
+    }
+    m_undoStack->clear();
+    clearScene();
+
+    auto restorePreviousDocument = [&]() {
+        clearScene();
+        m_undoStack->clear();
+        if (!previousDocument.isEmpty()) {
+            MindMapNode* previousRoot = MindMapIO::deserialize(previousDocument, m_scene);
+            if (previousRoot) {
+                previousRoot->layoutTree(0, 0);
+                previousRoot->adjustLayout();
+                previousRoot->updateAllEdges();
+                previousRoot->setNodeSelected(true);
+            }
+        } else {
+            setupDefaultTree();
+        }
+        m_view->setCurrentFilePath(previousFilePath);
+        updateTitle();
+    };
+
+    MindMapNode* root = MindMapIO::deserialize(rootJson, m_scene);
+    if (!root) {
+        QMessageBox::warning(this, QStringLiteral("导入失败"),
+                             QStringLiteral("内容解析成功，但无法生成思维导图节点。"));
+        restorePreviousDocument();
+        return false;
+    }
+    root->layoutTree(0, 0);
+    root->adjustLayout();
+    root->updateAllEdges();
+    root->setNodeSelected(true);
+
+    QRectF contentRect = m_scene->itemsBoundingRect();
+    if (!contentRect.isEmpty()) {
+        constexpr qreal margin = 200.0;
+        constexpr qreal minimumSize = 4000.0;
+        contentRect.adjust(-margin, -margin, margin, margin);
+        if (contentRect.width() < minimumSize) {
+            const qreal extra = (minimumSize - contentRect.width()) / 2.0;
+            contentRect.adjust(-extra, 0, extra, 0);
+        }
+        if (contentRect.height() < minimumSize) {
+            const qreal extra = (minimumSize - contentRect.height()) / 2.0;
+            contentRect.adjust(0, -extra, 0, extra);
+        }
+        m_scene->setSceneRect(contentRect);
+    }
+    m_view->centerOn(root);
+
+    // 导入的是别人格式的文件，不写回原路径：清空当前路径，首次保存时再问位置，
+    // 免得把 leap 内容直接覆盖到 .md 上。
+    m_view->setCurrentFilePath(QString());
+    m_undoStack->push(new QUndoCommand(actionLabel));
+    updateTitle();
+    if (m_pluginHost) m_pluginHost->notifyDocumentLoaded(QString());
+
+    QString message = QStringLiteral("已从 %1 导入。\n\n注意：这份文档还没有保存成 leap 文件，"
+                                     "保存时请另选位置。")
+                          .arg(sourceFileName);
+    if (!warnings.isEmpty()) {
+        message += QStringLiteral("\n\n以下内容在导入时被降级或忽略：\n· ") +
+                   warnings.join(QStringLiteral("\n· "));
+    }
+    QMessageBox::information(this, QStringLiteral("导入完成"), message);
+    return true;
+}
+
+bool MainWindow::performImportOutline(const QString& filePath) {
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, QStringLiteral("导入失败"),
+                             QStringLiteral("无法读取文件：\n") + file.errorString());
+        return false;
+    }
+    const QByteArray raw = file.readAll();
+    file.close();
+    QString text = QString::fromUtf8(raw);
+    if (text.isEmpty() && !raw.isEmpty()) text = QString::fromLocal8Bit(raw);
+    if (text.trimmed().isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("导入失败"),
+                             QStringLiteral("这个文件是空的。"));
+        return false;
+    }
+
+    // 图片：先问要不要一起导入，避免问完保存再问图片打断两次
+    bool includeImages = true;
+    const int imageRefs = MindMapMarkdownImporter::countImageReferences(text);
+    if (imageRefs > 0) {
+        bool remember = false;
+        const int choice = askImageImportChoice(imageRefs, &remember);
+        if (choice == 0) return false;
+        includeImages = (choice == 2);
+    }
+
+    // 解析阶段可能比较久（图片要解码），给一个可取消的进度框。
+    QProgressDialog progress(QStringLiteral("正在读取 Markdown 大纲…"), QStringLiteral("取消"),
+                             0, 100, this);
+    progress.setWindowTitle(QStringLiteral("导入大纲"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
+    bool cancelled = false;
+    auto onProgress = [&](int done, int total) {
+        if (total <= 0) return true;
+        progress.setMaximum(total);
+        // QProgressDialog::setValue 在模态时自己会 processEvents，取消按钮因此有效。
+        progress.setValue(done);
+        if (progress.wasCanceled()) {
+            cancelled = true;
+            return false;
+        }
+        return true;
+    };
+
+    const QString baseDir = QFileInfo(filePath).absolutePath();
+    const MarkdownParseResult parsed =
+        MindMapMarkdownImporter::parse(text, baseDir, includeImages, onProgress);
+    progress.close();
+
+    if (cancelled) return false;
+    if (!parsed.ok) {
+        QString message = QStringLiteral("无法解析这个 Markdown 文件");
+        if (!parsed.errorMessage.isEmpty()) message += QStringLiteral("：\n") + parsed.errorMessage;
+        QMessageBox::warning(this, QStringLiteral("导入失败"), message);
+        return false;
+    }
+    return replaceDocumentWithJson(parsed.rootJson, QFileInfo(filePath).fileName(),
+                                   QStringLiteral("从 Markdown 导入"), parsed.warnings);
+}
+
+void MainWindow::onImportOutline() {
+    auto choice = askSaveChanges();
+    if (choice == MainWindow::SaveChoice::Cancelled) return;
+    if (choice == MainWindow::SaveChoice::Discarded) {
+        deleteBackupForFile(m_view->currentFilePath());
+    }
+
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, QStringLiteral("导入大纲"),
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        MindMapMarkdownImporter::fileFilter());
+    if (filePath.isEmpty()) return;
+
+    performImportOutline(filePath);
 }
 
 void MainWindow::onExportMermaid() {
@@ -2307,9 +2937,15 @@ void MainWindow::applyTheme(bool dark) {
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
     )";
     m_view->setStyleSheet(scrollBarStyle);
+    // 侧边栏与画布同处一层，滚动条与背景各自套一份同样的样式，
+    // 否则深色模式下侧边栏会是一条亮色竖条。
+    applyPluginSidebarTheme(dark);
 
     // 10. Windows 标题栏深色模式
     setWindowsTitleBarDark(dark);
+
+    // 11. 通知插件主题变了（插件自己画的控件要跟着换色）。
+    if (m_pluginHost) m_pluginHost->notifyThemeChanged(dark);
 }
 
 // 【新增】设置Windows标题栏深色模式
@@ -2403,5 +3039,40 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     } else {
         deleteBackupForFile(m_view->currentFilePath());
         event->accept();
+    }
+}
+
+// 把插件提供的导出器追加到「文件 → 导出」子菜单。
+// 只做导出，不做导入：导入要把外部格式映射回 Block 体系，接口面会大得多。
+void MainWindow::appendPluginExporters() {
+    if (!m_exportSubMenu || !m_pluginManager) return;
+    const QList<PluginExporterEntry> exporters = m_pluginManager->exporters();
+    if (exporters.isEmpty()) return;
+
+    m_exportSubMenu->addSeparator();
+    for (const PluginExporterEntry& entry : exporters) {
+        LeapExporter* exporter = entry.exporter;
+        if (!exporter) continue;
+        const QString text = exporter->menuText();
+        if (text.isEmpty()) continue;
+        // 每个 action 单独捕获自己的 exporter，避免循环变量失效。
+        connect(m_exportSubMenu->addAction(text), &QAction::triggered, this,
+                [this, exporter, text]() {
+                    const QString filter = exporter->fileFilter();
+                    QString suffix = exporter->fileSuffix();
+                    if (suffix.startsWith(QLatin1Char('.'))) suffix.remove(0, 1);
+                    QString path = QFileDialog::getSaveFileName(
+                        this, text, QString(), filter.isEmpty() ? QString() : filter);
+                    if (path.isEmpty()) return;
+                    if (!suffix.isEmpty() && !path.endsWith(QLatin1Char('.') + suffix,
+                                                             Qt::CaseInsensitive)) {
+                        path += QLatin1Char('.') + suffix;
+                    }
+                    QString error;
+                    if (!exporter->exportDocument(m_pluginHost->documentToJson(), path, &error)) {
+                        QMessageBox::warning(this, text,
+                                             error.isEmpty() ? QStringLiteral("导出失败。") : error);
+                    }
+                });
     }
 }

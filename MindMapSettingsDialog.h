@@ -1,6 +1,9 @@
 #pragma once
 
 #include "MindMapStyle.h"
+// 只用到 PluginLoadRecord 这个纯数据结构，不调用 PluginManager 的任何函数，
+// 因此设置窗口不依赖插件加载器的实现（也不需要在预览工具里链接它）。
+#include "PluginManager.h"
 
 #include <QDialog>
 #include <QString>
@@ -29,9 +32,18 @@ class QWidget;
 class MindMapSettingsDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit MindMapSettingsDialog(MindMapNode* root, QWidget* parent = nullptr);
+    // plugins 是插件加载器已经得到的记录（可能为空）。设置窗口只是「查看 + 预留开关」，
+    // 传入拷贝而不是 PluginManager*，这样设置窗口既不依赖加载器实现，也不会在
+    // 对话框存活期间引用到可能被销毁的对象。
+    explicit MindMapSettingsDialog(MindMapNode* root,
+                                   const QList<PluginLoadRecord>& plugins = QList<PluginLoadRecord>(),
+                                   const QList<PluginSettingsPage>& pluginPages = QList<PluginSettingsPage>(),
+                                   QWidget* parent = nullptr);
     ~MindMapSettingsDialog() override;
 
+    // 打开时直接停在某一页（0=节点 1=段落 2=主题 3=操作 4=插件）。
+    // 越界时忽略，保持默认的第一页。
+    void setCurrentPage(int pageIndex);
     MindMapLevelStyles appliedStyles() const { return m_appliedStyles; }
 
 public slots:
@@ -50,6 +62,16 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    // 一页设置的描述。以前这些信息散落在 buildUi() 的分支和
+    // refreshLevelChrome() 的静态数组里，加一页要改三处；现在集中成一张表。
+    struct SettingsPageDef {
+        QString id;
+        QString title;
+        QString subtitle;
+        bool stylePage = false;  // 是否共享右侧「实时预览」面板
+        QWidget* widget = nullptr;  // 已套好 wrapPage 的页面控件
+    };
+
     // ===== 构建 =====
     void buildUi();
     QWidget* buildNodePage();
@@ -57,6 +79,11 @@ private:
     QWidget* buildRainbowCard(QWidget* page);
     QWidget* buildThemePage();
     QWidget* buildOperationPage();
+    QWidget* buildPluginsPage();
+    // 插件页里一行：名称 / 路径 / 状态，右侧预留开关位。
+    QWidget* buildPluginRow(const PluginLoadRecord& record);
+    // 重建插件列表内容（本轮只在构造时调用一次，留给将来"重新扫描"用）。
+    void refreshPluginRows();
     QWidget* buildPreviewPanel();
     QWidget* buildFooter();
     // 把页面内容塞进一个无边框滚动区，窗口变矮时可以滚动而不是被压扁。
@@ -178,12 +205,31 @@ private:
     QDoubleSpinBox* m_viewportMoveDuration = nullptr;
     SegmentedControl* m_miniMapMode = nullptr;
 
+    // 操作页 —— 导入 / 导出：三个开关（导出保留图片 / 导入保留图片 / 记住我的选择）。
+    // 前两个既是「记住」时直接套用的偏好，也是「每次询问」时弹窗的默认按钮。
+    ToggleSwitch* m_importExportExportToggle = nullptr;
+    ToggleSwitch* m_importExportImportToggle = nullptr;
+    ToggleSwitch* m_importExportRememberToggle = nullptr;
+
     // 预览与底部
     QWidget* m_previewPanel = nullptr;
     QLabel* m_previewLevelLabel = nullptr;
     StylePreviewWidget* m_preview = nullptr;
     QPushButton* m_restoreButton = nullptr;
     QPushButton* m_applyButton = nullptr;
+
+    // 插件页
+    QList<PluginLoadRecord> m_plugins;
+    QWidget* m_pluginListContainer = nullptr;
+    // 开关改动后显示「重启生效」提示；平时隐藏。
+    QLabel* m_pluginRestartHint = nullptr;
+    // 只为跟着主题换强调色；行重建时一起清空。
+    QList<ToggleSwitch*> m_pluginToggles;
+
+    // 插件提供的附加设置页（构造时传入，buildUi() 里逐页索取控件）。
+    QList<PluginSettingsPage> m_pluginPages;
+    // 导航与页头的唯一数据源，下标即页面下标。
+    QList<SettingsPageDef> m_pageDefs;
 
     QString m_themeMode;
     QString m_committedMode;

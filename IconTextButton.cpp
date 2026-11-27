@@ -90,6 +90,12 @@ void IconTextButton::applyStyleSheet() {
 
 void IconTextButton::setIconEmoji(const QString& iconName) {
     m_iconName = iconName;
+    m_iconPath.clear();
+    applyStyleSheet();
+}
+
+void IconTextButton::setIconFromFile(const QString& iconFilePath) {
+    m_iconPath = iconFilePath;
     applyStyleSheet();
 }
 
@@ -101,6 +107,44 @@ void IconTextButton::setAccentColor(const QColor& color) {
 void IconTextButton::updateIconPixmap(const QString& color) {
     if (!m_iconLabel) return;
 
+    const int size = qBound(16, m_iconFontSize + 2, 30);
+
+    // 【新增】插件图标走外部文件路径：SVG 仍按主题替换 currentColor，
+    // 位图（png/jpg）原样缩放，作者自己保证深色背景下可见。
+    if (!m_iconPath.isEmpty()) {
+        QFile iconFile(m_iconPath);
+        if (iconFile.open(QIODevice::ReadOnly)) {
+            const QByteArray data = iconFile.readAll();
+            iconFile.close();
+
+            QPixmap pixmap(size, size);
+            pixmap.fill(Qt::transparent);
+            QPainter painter(&pixmap);
+            painter.setRenderHint(QPainter::Antialiasing);
+
+            if (m_iconPath.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive)) {
+                QByteArray svg = data;
+                svg.replace("currentColor", color.toUtf8());
+                QSvgRenderer renderer(svg);
+                renderer.render(&painter);
+            } else {
+                QPixmap loaded;
+                if (loaded.loadFromData(data)) {
+                    painter.drawPixmap(QRect(0, 0, size, size),
+                                       loaded.scaled(size, size, Qt::KeepAspectRatio,
+                                                     Qt::SmoothTransformation));
+                }
+            }
+            painter.end();
+
+            if (!pixmap.isNull()) {
+                m_iconLabel->setPixmap(pixmap);
+                return;
+            }
+        }
+        // 文件读不到就落到下面的内置图标，至少不会变成空白按钮。
+    }
+
     QFile file(QString(":/icons/%1.svg").arg(m_iconName));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         m_iconLabel->clear();
@@ -110,7 +154,6 @@ void IconTextButton::updateIconPixmap(const QString& color) {
     QByteArray svg = file.readAll();
     svg.replace("currentColor", color.toUtf8());
 
-    const int size = qBound(16, m_iconFontSize + 2, 30);
     QPixmap pixmap(size, size);
     pixmap.fill(Qt::transparent);
 

@@ -28,6 +28,16 @@ public:
     void setDisplayMode(DisplayMode mode);
     DisplayMode displayMode() const { return m_displayMode; }
 
+    // 尺寸百分比，100 = 基准 180x120。宿主会夹到 [kMinSizePercent,
+    // kMaxSizePercent]。绘制全部基于 contentRect()，因此改尺寸不需要别的适配。
+    static constexpr int kMinSizePercent = 50;
+    static constexpr int kMaxSizePercent = 200;
+    static constexpr int kBaseWidth = 180;
+    static constexpr int kBaseHeight = 120;
+
+    void setSizePercent(int percent);
+    int sizePercent() const { return m_sizePercent; }
+
     void showForMovement();
     void invalidateCache();
 
@@ -81,6 +91,7 @@ private:
     bool m_cacheDirty = true;
 
     DisplayMode m_displayMode = DisplayMode::OnMovement;
+    int m_sizePercent = 100;
 
     bool m_pressed = false;
     bool m_dragging = false;

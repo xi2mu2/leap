@@ -26,6 +26,10 @@ public:
 
     void ensureSceneRectContains();
     void ensureNodeVisible(MindMapNode* node, qreal margin = 50);
+    // 重排整棵树，同时把内容钉在屏幕原位（滚动补偿）。
+    // 收尾编辑、撤销/重做、宽度拖拽等「结构性重排」必须走这里：
+    // layoutTree() 会把根节点放回规范原点，直接重排会让画面整体位移。
+    void relayoutKeepingViewport(MindMapNode* root);
     // 仅当节点超出编辑安全区时调整视野；安全区内保持当前视野。
     void ensureNodeInEditSafeZone(MindMapNode* node, qreal horizontalMargin = 120,
                                   qreal verticalMargin = 80);
@@ -38,6 +42,14 @@ public:
     void panToSceneCenter(const QPointF& sceneCenter, bool animated);
     // 按 QSettings 里的 minimapMode 重新应用小地图的显示方式。
     void reloadMiniMapSettings();
+    // 小地图尺寸百分比（100 = 默认）。给插件接口用，宿主会负责持久化。
+    int miniMapSizePercent() const;
+    void setMiniMapSizePercent(int percent);
+    // 缩放百分比（100 = 原始大小）。
+    int zoomPercent() const;
+    void setZoomPercent(int percent);
+    // 缩放到适应窗口（与 Ctrl+0 一致）。
+    void fitToWindow();
     // 清理场景前释放所有交互态，避免鼠标事件继续持有已删除节点指针。
     void resetForSceneChange();
     int selectedNodeCount() const;

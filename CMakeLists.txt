@@ -102,6 +102,8 @@ add_executable(leap WIN32
     MindMapPptExporter.h
     MindMapMermaid.cpp
     MindMapMermaid.h
+    MindMapMarkdown.cpp
+    MindMapMarkdown.h
     MindMapIO.cpp
     MindMapIO.h
     MindMapNode.cpp
@@ -126,6 +128,11 @@ add_executable(leap WIN32
     MindMapFormulaDialog.h
     FormulaCheatSheet.cpp
     FormulaCheatSheet.h
+    LeapPluginApi.h
+    PluginManager.cpp
+    PluginManager.h
+    LeapHostBridge.cpp
+    LeapHostBridge.h
     leap.qrc
     ${JKQTMATHTEXT_SOURCES}
     ${JKQTCOMMON_SOURCES}
@@ -163,6 +170,42 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME mindmap_mermaid_test COMMAND mindmap_mermaid_test)
     set_tests_properties(mindmap_mermaid_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Markdown 大纲导入/导出：验证层级解析、公式围栏、任务列表降级与图片往返。
+    add_executable(mindmap_markdown_test
+        tests/MindMapMarkdownTest.cpp ${LEAP_CACHE_TEST_SOURCES})
+    target_include_directories(mindmap_markdown_test PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${LEAP_GENERATED_DIR}")
+    target_link_libraries(mindmap_markdown_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    if(WIN32)
+        target_link_libraries(mindmap_markdown_test PRIVATE dwmapi)
+    endif()
+    add_test(NAME mindmap_markdown_test COMMAND mindmap_markdown_test)
+    set_tests_properties(mindmap_markdown_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # 布局稳定性：layoutTree()/adjustLayout() 必须幂等，且规范原点与树之前
+    # 的位置无关。设置刷新、撤销/重做、收尾编辑都依赖这条，否则画面会在两套
+    # 绝对坐标之间跳变。
+    add_executable(mindmap_layout_stability_test
+        tests/MindMapLayoutStabilityTest.cpp ${LEAP_CACHE_TEST_SOURCES})
+    target_include_directories(mindmap_layout_stability_test PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${LEAP_GENERATED_DIR}")
+    target_link_libraries(mindmap_layout_stability_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    if(WIN32)
+        target_link_libraries(mindmap_layout_stability_test PRIVATE dwmapi)
+    endif()
+    add_test(NAME mindmap_layout_stability_test COMMAND mindmap_layout_stability_test)
+    set_tests_properties(mindmap_layout_stability_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # 视野稳定性：结构性重排（设置刷新、收尾编辑、撤销/重做）不能改变
+    # 内容在屏幕上的位置，否则用户会看到画面跳变。
+    add_executable(mindmap_viewport_stability_test
+        tests/MindMapViewportStabilityTest.cpp ${LEAP_CACHE_TEST_SOURCES})
+    target_include_directories(mindmap_viewport_stability_test PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${LEAP_GENERATED_DIR}")
+    target_link_libraries(mindmap_viewport_stability_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    if(WIN32)
+        target_link_libraries(mindmap_viewport_stability_test PRIVATE dwmapi)
+    endif()
+    add_test(NAME mindmap_viewport_stability_test COMMAND mindmap_viewport_stability_test)
+    set_tests_properties(mindmap_viewport_stability_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(mindmap_style_test tests/MindMapStyleTest.cpp)
     target_link_libraries(mindmap_style_test PRIVATE Qt6::Core Qt6::Gui)
@@ -207,6 +250,17 @@ if(BUILD_TESTING)
     # 需要 Widgets：测试里 include 了 MindMapIO.h 以读取文件格式版本常量。
     target_link_libraries(mindmap_version_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
     add_test(NAME mindmap_version_test COMMAND mindmap_version_test)
+
+    # ReplaceDocumentCommand 往返：插件批量改写文档（LeapDocumentWriter）的底座。
+    add_executable(mindmap_document_replace_test
+        tests/MindMapDocumentReplaceTest.cpp ${LEAP_CACHE_TEST_SOURCES})
+    target_include_directories(mindmap_document_replace_test PRIVATE "${CMAKE_SOURCE_DIR}/libs" "${LEAP_GENERATED_DIR}")
+    target_link_libraries(mindmap_document_replace_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    if(WIN32)
+        target_link_libraries(mindmap_document_replace_test PRIVATE dwmapi)
+    endif()
+    add_test(NAME mindmap_document_replace_test COMMAND mindmap_document_replace_test)
+    set_tests_properties(mindmap_document_replace_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
 # 【新增】Windows 下链接 dwmapi 库（用于深色模式标题栏）
@@ -283,6 +337,70 @@ endif()
 target_include_directories(settings_preview PRIVATE
     "${CMAKE_SOURCE_DIR}"
     "${LEAP_GENERATED_DIR}"
+)
+
+# ========== 示例插件（开发者工具）==========
+# 一个最小的 leap 插件，用来验证插件机制本身。
+# 不参与默认构建：需要时执行
+#     cmake --build . --target leap_hello_plugin
+# 产物会落在 <build>/plugins/hello/leap_hello_plugin.dll，
+# 正好是 leap.exe 启动时扫描的位置，构建完直接运行 leap 就能看到按钮。
+add_library(leap_hello_plugin MODULE EXCLUDE_FROM_ALL
+    examples/hello-plugin/HelloPlugin.cpp
+    examples/hello-plugin/plugin.json
+    LeapPluginApi.h
+)
+
+target_include_directories(leap_hello_plugin PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(leap_hello_plugin PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+
+set_target_properties(leap_hello_plugin PROPERTIES
+    PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/hello"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/hello"
+)
+
+# minimap_scale：演示 API 3 的视图控制接口（LeapViewControl）。
+# 侧边栏里加一个「小地图缩放」按钮，按百分比调小地图大小。
+#     cmake --build . --target leap_minimap_scale_plugin
+add_library(leap_minimap_scale_plugin MODULE EXCLUDE_FROM_ALL
+    examples/minimap_scale/MinimapScalePlugin.cpp
+    examples/minimap_scale/plugin.json
+    LeapPluginApi.h
+)
+
+target_include_directories(leap_minimap_scale_plugin PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(leap_minimap_scale_plugin PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+
+set_target_properties(leap_minimap_scale_plugin PROPERTIES
+    PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/minimap_scale"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/minimap_scale"
+)
+
+# markdown_import：演示 API 4 的批量改写接口（LeapDocumentWriter）。
+# 侧边栏里加一个「Markdown」按钮，把粘贴的 Markdown 一次性转成整份导图。
+#     cmake --build . --target leap_markdown_import_plugin
+add_library(leap_markdown_import_plugin MODULE EXCLUDE_FROM_ALL
+    examples/markdown_import/MarkdownImportPlugin.cpp
+    examples/markdown_import/plugin.json
+    LeapPluginApi.h
+)
+target_include_directories(leap_markdown_import_plugin PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+)
+target_link_libraries(leap_markdown_import_plugin PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+
+set_target_properties(leap_markdown_import_plugin PROPERTIES
+    PREFIX ""
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/markdown_import"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/markdown_import"
 )
 
 

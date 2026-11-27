@@ -693,10 +693,7 @@ void MindMapNode::removeBlockAt(int index) {
     calcNodeSize();
     MindMapNode* root = getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     if (scene()) scene()->update();
 }
@@ -983,10 +980,7 @@ void MindMapNode::addImage(const QImage& image) {
     calcNodeSize();
     MindMapNode* root = getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     if (scene()) scene()->update();
 }
@@ -1004,10 +998,7 @@ void MindMapNode::removeImage(MindMapImageItem* imageItem) {
                 calcNodeSize();
                 MindMapNode* root = getRoot();
                 if (root) {
-                    root->clearEdges();
-                    root->layoutTree(0, 0);
-                    root->adjustLayout();
-                    root->updateAllEdges();
+                    relayout(root);
                 }
                 if (scene()) scene()->update();
                 return;
@@ -1046,10 +1037,7 @@ void MindMapNode::injectImages(const QVector<QPair<QString, QPair<QSizeF, QImage
     calcNodeSize();
     MindMapNode* root = getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
 }
 
@@ -1079,10 +1067,7 @@ void MindMapNode::insertFormula(const QString& latexCode) {
     calcNodeSize();
     MindMapNode* root = getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     if (scene()) scene()->update();
 }
@@ -1104,10 +1089,7 @@ void MindMapNode::removeFormula(int index) {
     calcNodeSize();
     MindMapNode* root = getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     if (scene()) scene()->update();
 }
@@ -1602,10 +1584,10 @@ void MindMapNode::finishEdit(bool ensureVisible) {
     } else {
         calcNodeSize();
         MindMapNode* root = getRoot();
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        // 收尾编辑后的重排必须保持视口不动：layoutTree() 会把根节点放回
+        // 规范原点，直接调用会让整张图相对屏幕弹跳（尤其是点了画布空白
+        // 结束编辑时）。
+        relayout(root);
         if (ensureVisible && m_isSelected && scene() && !scene()->views().isEmpty()) {
             scene()->views().first()->ensureVisible(this, 50, 50);
         }
@@ -1661,10 +1643,7 @@ void MindMapNode::cancelEdit() {
 
     calcNodeSize();
     MindMapNode* root = getRoot();
-    root->clearEdges();
-    root->layoutTree(0, 0);
-    root->adjustLayout();
-    root->updateAllEdges();
+    relayout(root);
 
     if (m_isSelected && scene() && !scene()->views().isEmpty()) {
         scene()->views().first()->ensureVisible(this, 50, 50);
@@ -1720,11 +1699,7 @@ void MindMapNode::setExpanded(bool expanded) {
     }
 
     if (MindMapNode* root = getRoot()) {
-        QPointF rootPos = root->pos();
-        root->clearEdges();
-        root->layoutTree(rootPos.x(), rootPos.y());
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
 
     if (scene() && !scene()->views().isEmpty()) {
@@ -2089,10 +2064,7 @@ void MindMapNode::handleChildPressEvent(QGraphicsSceneMouseEvent* event) {
         if (!clickedOnBlock) {
             clearBlockSelection();
             MindMapNode* root = getRoot();
-            root->clearEdges();
-            root->layoutTree(0, 0);
-            root->adjustLayout();
-            root->updateAllEdges();
+            relayout(root);
             if (scene()) scene()->update();
         }
     }
@@ -2185,11 +2157,7 @@ void MindMapNode::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         // 【新增】触发全局重新布局
         MindMapNode* root = getRoot();
         if (root) {
-            QPointF rootPos = root->pos();
-            root->clearEdges();
-            root->layoutTree(rootPos.x(), rootPos.y());
-            root->adjustLayout();
-            root->updateAllEdges();
+            relayout(root);
         }
         if (scene()) scene()->update();
         event->accept();
@@ -2224,10 +2192,7 @@ void MindMapNode::keyPressEvent(QKeyEvent* event) {
                         calcNodeSize();
                         MindMapNode* root = getRoot();
                         if (root) {
-                            root->clearEdges();
-                            root->layoutTree(0, 0);
-                            root->adjustLayout();
-                            root->updateAllEdges();
+                            relayout(root);
                         }
                         if (scene()) scene()->update();
                     }
@@ -2329,10 +2294,7 @@ void MindMapNode::keyPressEvent(QKeyEvent* event) {
                 }
                 if (newNode) {
                     if (scene()) scene()->addItem(newNode);
-                    root->clearEdges();
-                    root->layoutTree(0, 0);
-                    root->adjustLayout();
-                    root->updateAllEdges();
+                    relayout(root);
                     setNodeSelected(false);
                     newNode->setNodeSelected(true);
                 }
@@ -2348,10 +2310,7 @@ void MindMapNode::keyPressEvent(QKeyEvent* event) {
             } else {
                 auto* newNode = new MindMapNode("", this);
                 if (scene()) scene()->addItem(newNode);
-                root->clearEdges();
-                root->layoutTree(0, 0);
-                root->adjustLayout();
-                root->updateAllEdges();
+                relayout(root);
                 setNodeSelected(false);
                 newNode->setNodeSelected(true);
             }
@@ -2401,10 +2360,7 @@ void MindMapNode::keyPressEvent(QKeyEvent* event) {
                 if (newSelected) {
                     newSelected->setNodeSelected(true);
                     root = newSelected->getRoot();
-                    root->clearEdges();
-                    root->layoutTree(0, 0);
-                    root->adjustLayout();
-                    root->updateAllEdges();
+                    relayout(root);
                 }
                 event->accept();
                 return;

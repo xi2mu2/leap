@@ -430,10 +430,9 @@ QSize StylePreviewWidget::minimumSizeHint() const {
     return QSize(150, 200);
 }
 
-void StylePreviewWidget::setRainbowPreview(bool enabled, const QVector<QColor>& colors) {
-    if (m_rainbowEnabled == enabled && m_rainbowColors == colors) return;
-    m_rainbowEnabled = enabled;
-    m_rainbowColors = colors;
+void StylePreviewWidget::setRainbowPreview(const MindMapRainbowStyle& rainbow) {
+    m_rainbowEnabled = rainbow.enabled;
+    m_rainbow = rainbow;
     update();
 }
 
@@ -515,14 +514,13 @@ void StylePreviewWidget::paintLevelPreview(QPainter* painter) {
 }
 
 void StylePreviewWidget::paintRainbowPreview(QPainter* painter) {
-    QVector<QColor> colors = m_rainbowColors;
-    if (colors.isEmpty()) colors = MindMapRainbowStyle::defaultColors();
-    const int rows = colors.size();
+    // 用与画布完全相同的配置和派生规则生成预览色，避免预览和节点各写一套算法。
+    // 这里必须带上 branchStyles，否则用户微调过的分支在预览里仍是预设色。
+    MindMapRainbowStyle palette = m_rainbow;
+    if (palette.colors.isEmpty()) palette.colors = MindMapRainbowStyle::defaultColors();
+    palette.enabled = true;
+    const int rows = palette.colors.size();
     if (rows <= 0) return;
-
-    // 用与画布完全相同的派生规则生成预览色，避免预览和节点各写一套算法。
-    MindMapRainbowStyle palette;
-    palette.colors = colors;
 
     const qreal pad = 12.0;
     const qreal availWidth = qMax<qreal>(120.0, width() - 2 * pad);

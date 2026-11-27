@@ -20,6 +20,9 @@ public:
 
     void applyStyleSheet();
     void setIconEmoji(const QString& iconName);
+    // 【新增】用外部文件（png / svg）作为图标，供插件按钮使用。
+    // SVG 里的 currentColor 仍会按主题替换；PNG 按当前主题决定是否反色。
+    void setIconFromFile(const QString& iconFilePath);
     void setAccentColor(const QColor& color);
 
 protected:
@@ -29,6 +32,8 @@ private:
     void updateIconPixmap(const QString& color);
 
     QString m_iconName;
+    // 非空时优先用这个外部文件，忽略 m_iconName（插件图标走这条路）。
+    QString m_iconPath;
     QString m_text;
     int m_iconFontSize;
     int m_textFontSize;

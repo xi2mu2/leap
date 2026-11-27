@@ -120,7 +120,8 @@ public:
     void setConnectorColor(const QColor& color);
     // 彩虹分支预览：每个分支一行，左格是 1 级饱和色，右格是同色系的 2 级浅色。
     // 小尺寸节点是刻意的——面板只有 280 px 宽，按真实字号排版会溢出。
-    void setRainbowPreview(bool enabled, const QVector<QColor>& colors);
+    // 传整个配置而不是只传六色：用户逐分支微调过的三色也要在预览里体现出来。
+    void setRainbowPreview(const MindMapRainbowStyle& rainbow);
     // 彩虹模式下高亮某一行（对应设置页里被选中的那个色块）。
     void setRainbowSelectedBranch(int branch);
 
@@ -139,7 +140,8 @@ private:
     QColor m_accent = QColor("#2563eb");
     QColor m_connector = QColor("#cbd5e1");
     bool m_rainbowEnabled = false;
-    QVector<QColor> m_rainbowColors;
+    // 整份彩虹配置（六色 + 每分支的微调），预览据此复刻画布上的派生结果。
+    MindMapRainbowStyle m_rainbow;
     int m_rainbowSelectedBranch = 0;
 };
 

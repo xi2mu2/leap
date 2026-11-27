@@ -2,12 +2,21 @@
 
 #include <QUndoStack>
 #include <QGraphicsScene>
+#include <QJsonObject>
 #include <QPointF>
 #include <QVector>
 
 class MindMapNode;
 class MindMapBlock;
 class TextBlock;
+
+// 结构性重排：整棵树回到规范原点 (0, 0) 重新布局。
+// layoutTree() 的 y 参数是「子树顶部」而不是节点自身的 y，所以规范起点只能是
+// (0, 0)；传入 root->pos().y() 会让根节点每次重排都向下累积偏移，而别处的重排
+// 又把偏移抹平，画面就在两套绝对坐标之间跳。
+// 若场景连着 MindMapView，则同时把内容钉回屏幕原位（滚动补偿），
+// 这样收尾编辑、撤销/重做、宽度拖拽都不会让视野跳动。
+void relayout(MindMapNode* root);
 
 // 编辑节点文本（保存所有文本块的完整状态）
 class EditTextCommand : public QUndoCommand {
@@ -319,5 +328,30 @@ private:
     qreal m_oldWidth;
     qreal m_newWidth;
     QGraphicsScene* m_scene;
+};
+
+// 【新增】整份文档替换（供插件批量改写文档用）。
+//
+// 只保存两份 JSON 快照，不持有节点对象。原因是「持有两棵树」的写法会出人命：
+// 撤销栈里排在它前面的命令（EditTextCommand 等）还引用着旧树的节点，
+// 一旦本命令析构把旧树删了，那些命令再撤销就是访问已释放内存。
+// 保存 JSON 就没有归属权纠缠，代价是撤销/重做时各反序列化一次。
+//
+// 使用前提（由调用方保证）：push 之前已经 m_undoStack->clear()，
+// 这样栈里没有别的命令引用即将被替换掉的节点。
+class ReplaceDocumentCommand : public QUndoCommand {
+public:
+    ReplaceDocumentCommand(const QJsonObject& oldDoc, const QJsonObject& newDoc,
+                           QGraphicsScene* scene, const QString& text = QStringLiteral("替换文档"));
+    void undo() override;
+    void redo() override;
+
+private:
+    // 清空场景并把 doc 描述的那棵树装进去。
+    void install(const QJsonObject& doc);
+
+    QJsonObject m_oldDoc;
+    QJsonObject m_newDoc;
+    QGraphicsScene* m_scene = nullptr;
 };
 

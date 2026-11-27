@@ -132,6 +132,33 @@ static int rainbowNodeChecks() {
         CHECK(tweakedReloaded->childNodes().at(0)->m_fillColor == QColor("#123456"));
     }
 
+    // 跨周期：第 7 个 1 级分支（序号 6）用的颜色和覆盖都必须是第 1 个分支那一份。
+    // 界面只有 6 个色块，用户改的永远是前 6 个，后面的周期必须跟着走。
+    {
+        // 此刻根下是 z、a 两支，补齐到 9 支让序号 6 真实存在。
+        MindMapLevelStyles tweakedCycle = on;
+        MindMapRainbowBranchStyle cycleFill;
+        cycleFill.hasFill = true;
+        cycleFill.fillColor = QColor("#123456");
+        tweakedCycle.rainbow.setBranchStyle(0, 1, cycleFill);
+
+        std::unique_ptr<MindMapNode> wide(new MindMapNode("wide"));
+        QVector<MindMapNode*> leaves;
+        for (int i = 0; i < 8; ++i) {
+            auto* leaf = new MindMapNode(QStringLiteral("x%1").arg(i).toStdString().c_str());
+            wide->addChild(leaf);
+            leaves.append(leaf);
+        }
+        wide->applyLevelStyles(tweakedCycle);
+        // 8 个 1 级分支，序号 6 折回第 1 个分支（被覆盖），序号 7 折回第 2 个（没覆盖）。
+        CHECK(leaves.at(6)->styleBranchIndex() == 6);
+        CHECK(leaves.at(6)->m_fillColor == QColor("#123456"));
+        CHECK(leaves.at(0)->m_fillColor == QColor("#123456"));
+        CHECK(leaves.at(7)->styleBranchIndex() == 7);
+        CHECK(leaves.at(7)->m_fillColor == palette.at(1));
+        CHECK(leaves.at(1)->m_fillColor == palette.at(1));
+    }
+
     // 撤掉覆盖，后面的存档往返断言才有确定的期望值。
     root->applyLevelStyles(on);
     CHECK(z->m_fillColor == palette.at(0));

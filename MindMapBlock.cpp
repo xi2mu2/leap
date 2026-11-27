@@ -918,10 +918,7 @@ void FormulaPixmapItem::contextMenuEvent(QGraphicsSceneContextMenuEvent* event) 
                 m_parentNode->calcNodeSize();
                 MindMapNode* root = m_parentNode->getRoot();
                 if (root) {
-                    root->clearEdges();
-                    root->layoutTree(0, 0);
-                    root->adjustLayout();
-                    root->updateAllEdges();
+                    relayout(root);
                 }
                 if (m_parentNode->scene()) m_parentNode->scene()->update();
             }

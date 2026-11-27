@@ -12,6 +12,8 @@
 - 主题：亮色 / 暗色
 - 彩虹分支：按 1 级子节点的先后顺序循环取色（六色一周期），每个分支的后续节点沿用同色系；内置 14 套预设色卡（经典彩虹 / 暖橙青紫 / 粉橙深红 / 单色蓝渐变 / 马卡龙淡彩 / 大地色 / 宝石深色 / 粉蓝撞色 / 莫兰迪等），也可以逐分支微调填充 / 边框 / 字体颜色，改完能命名保存成自己的色卡
 - Mermaid 互操作：可把导图导出为 `.mmd`，也能把 `.mmd` / `.mermaid` 导入成节点树，导出的文件可直接贴到 mermaid.live 预览；形状、图标、`:::` 类名、逐节点配色与图片是 Mermaid 表达不了的，导入时会忽略并给出提示
+- Markdown 大纲互操作：可把导图导出成 Obsidian 兼容的 `.md` 无序列表大纲，也能把 `.md` 大纲导入成节点树。导出时若导图里有图片会询问「保留图片 / 仅文字」：保留则在导出位置建同名文件夹，把 `<名称>.md` 与 `image_001.png`…`image_00N.png` 一起放进去，正文用 `![](image_001.png)` 引用（图片与 .md 在同一个 Obsidian vault 内才会显示）；仅文字则写成单文件并把图片降级成 `[图片: 名称]` 占位。公式用 `$$...$$` 围栏，任务列表 `- [x]` / `- [ ]` 导入时降级成 ☑ / ☐ 前缀（不可逆），空节点导出成占位文字「（空节点）」、导入时再还原。这个选择可以在 `设置 → 操作 → 导入 / 导出` 里记住，也可以随时「恢复为每次询问」
+- 插件：把插件文件夹拷进 `plugins/` 目录、重启即可生效；插件能在左侧侧边栏加按钮、在「文件」菜单加菜单项、在「设置」里加整页、在「文件 → 导出」里加导出格式，还能读写文档（含整份文档批量改写）、控制缩放与小地图、接收文档变化通知，并能读写自己的配置。管理和开关在「设置 → 插件」里
 - 小地图导航、图片节点、自动备份
 
 ## 下载
@@ -59,6 +61,27 @@ build_release.bat
 
 > 注意：`MindMapIO::CURRENT_VERSION` 是 **`.mindmap` 文件格式版本**，
 > 与产品版本号无关，不要跟着 `VERSION` 一起改。
+
+## 插件开发
+
+插件是普通的 Qt 动态库（`.dll`），用 `QPluginLoader` 在启动时加载。宿主只通过一个纯虚
+接口 [LeapPluginApi.h](LeapPluginApi.h) 交互，插件不需要、也无法链接 leap 的其它代码。
+
+- 完整指南（接口、生命周期约定、编译要求）：[docs/PLUGINS.md](docs/PLUGINS.md)
+- 可编译的示例：
+  - [examples/hello-plugin](examples/hello-plugin)——最小插件，演示侧边栏按钮、文件菜单项、一整页设置，以及读写自己的配置
+  - [examples/minimap_scale](examples/minimap_scale)——演示视图控制接口：用百分比调整小地图大小
+  - [examples/markdown_import](examples/markdown_import)——演示批量改写接口：把 Markdown 一次性转成整份导图
+
+```bash
+cmake -S examples/hello-plugin -B build-plugin -DCMAKE_PREFIX_PATH="C:/Qt/6.5.3/mingw_64"
+cmake --build build-plugin --config Release
+```
+
+把产出的 dll 连同文件夹拷到 leap 的 `plugins/` 目录下，重启 leap 后生效。
+
+> 插件 dll 必须以 **相同的编译器与 Qt 版本**（MinGW 11.2.0 / Qt 6.5.3）编译，
+> 否则加载会失败——C++ 没有跨编译器 ABI。
 
 ## 许可证
 

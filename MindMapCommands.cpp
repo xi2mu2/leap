@@ -5,6 +5,7 @@
 #include "MindMapImageItem.h"
 #include "MindMapImageItem.h"
 #include "MindMapView.h"
+#include "MindMapIO.h"
 
 static MindMapNode* findSelectedNode(QGraphicsScene* scene) {
     if (!scene) return nullptr;
@@ -18,6 +19,15 @@ static MindMapNode* findSelectedNode(QGraphicsScene* scene) {
 
 void relayout(MindMapNode* root) {
     if (!root) return;
+    // 结构性重排会把根节点放回规范原点，画面会整体位移。凡是命令触发的
+    // 重排都走"重排但把内容钉在屏幕原位"，需要滚动的用例自己再调
+    // triggerSceneExpand() 明确滚动到目标节点。
+    if (root->scene() && !root->scene()->views().isEmpty()) {
+        if (auto* view = dynamic_cast<MindMapView*>(root->scene()->views().first())) {
+            view->relayoutKeepingViewport(root);
+            return;
+        }
+    }
     root->clearEdges();
     root->layoutTree(0, 0);
     root->adjustLayout();
@@ -526,19 +536,13 @@ void InsertBlockCommand::undo() {
     m_ownsBlock = true;
     MindMapNode* root = m_node->getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     // 【新增】撤销插入后，自动调整文本块宽度与节点一致
     m_node->autoFitTextBlockWidths();
     m_node->calcNodeSize();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     if (m_scene) m_scene->update();
     triggerSceneExpand(m_node);
@@ -570,19 +574,13 @@ void InsertBlockCommand::redo() {
     m_ownsBlock = false;
     MindMapNode* root = m_node->getRoot();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     // 【新增】插入图片/公式后，自动调整文本块宽度与节点一致
     m_node->autoFitTextBlockWidths();
     m_node->calcNodeSize();
     if (root) {
-        root->clearEdges();
-        root->layoutTree(0, 0);
-        root->adjustLayout();
-        root->updateAllEdges();
+        relayout(root);
     }
     if (m_scene) m_scene->update();
     triggerSceneExpand(m_node);
@@ -1048,10 +1046,7 @@ void FormatTextCommand::undo() {
         m_node->calcNodeSize();
         MindMapNode* root = m_node->getRoot();
         if (root) {
-            root->clearEdges();
-            root->layoutTree(0, 0);
-            root->adjustLayout();
-            root->updateAllEdges();
+            relayout(root);
         }
         if (m_scene) m_scene->update();
         triggerSceneExpand(m_node);
@@ -1074,10 +1069,7 @@ void FormatTextCommand::redo() {
         m_node->calcNodeSize();
         MindMapNode* root = m_node->getRoot();
         if (root) {
-            root->clearEdges();
-            root->layoutTree(0, 0);
-            root->adjustLayout();
-            root->updateAllEdges();
+            relayout(root);
         }
         if (m_scene) m_scene->update();
         triggerSceneExpand(m_node);
@@ -1100,27 +1092,71 @@ ResizeNodeCommand::ResizeNodeCommand(MindMapNode* node, qreal oldWidth, qreal ne
 void ResizeNodeCommand::undo() {
     if (!m_node) return;
     m_node->setNodeContentWidth(m_oldWidth);
-    MindMapNode* root = m_node->getRoot();
-    if (root) {
-        QPointF rootPos = root->pos();
-        root->clearEdges();
-        root->layoutTree(rootPos.x(), rootPos.y());
-        root->adjustLayout();
-        root->updateAllEdges();
-    }
+    relayout(m_node->getRoot());
     if (m_scene) m_scene->update();
 }
 
 void ResizeNodeCommand::redo() {
     if (!m_node) return;
     m_node->setNodeContentWidth(m_newWidth);
-    MindMapNode* root = m_node->getRoot();
-    if (root) {
-        QPointF rootPos = root->pos();
-        root->clearEdges();
-        root->layoutTree(rootPos.x(), rootPos.y());
-        root->adjustLayout();
-        root->updateAllEdges();
-    }
+    relayout(m_node->getRoot());
     if (m_scene) m_scene->update();
+}
+
+// ===== ReplaceDocumentCommand =====
+ReplaceDocumentCommand::ReplaceDocumentCommand(const QJsonObject& oldDoc, const QJsonObject& newDoc,
+                                               QGraphicsScene* scene, const QString& text)
+    : m_oldDoc(oldDoc), m_newDoc(newDoc), m_scene(scene) {
+    setText(text);
+}
+
+void ReplaceDocumentCommand::install(const QJsonObject& doc) {
+    if (!m_scene) return;
+
+    // 空文档直接放弃：宁可什么都不做，也不能把现有文档清空之后装不进新树。
+    if (doc.isEmpty()) return;
+
+    // 把场景里的旧文档整体清掉。调用方在 push 之前已经 clear() 过撤销栈，
+    // 所以这里 delete 不会让别的命令拿到悬空指针。
+    // MindMapNode 析构会递归删除子节点（析构里 child->m_parent = nullptr 再 delete），
+    // 因此只需摘掉根节点并删除它。
+    QVector<MindMapNode*> roots;
+    for (auto* item : m_scene->items()) {
+        if (auto* node = dynamic_cast<MindMapNode*>(item)) {
+            if (!node->parentNode()) roots.append(node);
+        }
+    }
+    for (auto* node : roots) {
+        detachSubtree(node, m_scene);
+    }
+    for (auto* node : roots) {
+        delete node;
+    }
+    // 连线等残留 item。
+    m_scene->clear();
+
+    MindMapNode* newRoot = MindMapIO::deserialize(doc, m_scene);
+    if (!newRoot) return;
+
+    newRoot->layoutTree(0, 0);
+    newRoot->adjustLayout();
+    newRoot->updateAllEdges();
+    newRoot->setNodeSelected(true);
+    m_scene->update();
+
+    if (!m_scene->views().isEmpty()) {
+        if (auto* view = dynamic_cast<MindMapView*>(m_scene->views().first())) {
+            view->ensureSceneRectContains();
+            view->centerOn(newRoot);
+        }
+    }
+}
+
+void ReplaceDocumentCommand::redo() {
+    // push() 会立刻调一次 redo()，那时场景里还是旧文档，正好由这里替换掉。
+    install(m_newDoc);
+}
+
+void ReplaceDocumentCommand::undo() {
+    install(m_oldDoc);
 }

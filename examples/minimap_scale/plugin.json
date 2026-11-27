@@ -1,0 +1,7 @@
+{
+  "name": "小地图缩放",
+  "apiVersion": 3,
+  "version": "1.0.0",
+  "author": "leap",
+  "description": "在侧边栏加一个「小地图缩放」按钮，按百分比调整小地图大小。演示 API 3 的视图控制接口。"
+}

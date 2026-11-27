@@ -33,7 +33,7 @@ MindMapMiniMap::MindMapMiniMap(QGraphicsView* view)
     // WA_TransparentForMouseEvents。关闭模式靠 hide() 屏蔽交互。
     setAttribute(Qt::WA_NoSystemBackground);
     setAutoFillBackground(false);
-    setFixedSize(180, 120);
+    setFixedSize(kBaseWidth, kBaseHeight);
     setMouseTracking(true);
     setCursor(Qt::PointingHandCursor);
     hide();
@@ -102,6 +102,20 @@ void MindMapMiniMap::setDisplayMode(DisplayMode mode) {
         hide();
         break;
     }
+}
+
+void MindMapMiniMap::setSizePercent(int percent) {
+    const int clamped = qBound(kMinSizePercent, percent, kMaxSizePercent);
+    if (clamped == m_sizePercent) return;
+    m_sizePercent = clamped;
+
+    const int width = qMax(32, kBaseWidth * clamped / 100);
+    const int height = qMax(24, kBaseHeight * clamped / 100);
+    setFixedSize(width, height);
+
+    // 缓存图是按旧尺寸和目标矩形生成的，必须作废重画。
+    invalidateCache();
+    update();
 }
 
 void MindMapMiniMap::showForMovement() {

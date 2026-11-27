@@ -1,0 +1,7 @@
+{
+  "name": "Markdown 转导图",
+  "apiVersion": 4,
+  "version": "1.0.0",
+  "author": "leap",
+  "description": "把 Markdown 标题与列表一次性转换成整份思维导图。演示 API 4 的 LeapDocumentWriter（批量改写文档）。"
+}

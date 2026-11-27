@@ -1,0 +1,7 @@
+{
+    "name": "示例插件",
+    "apiVersion": 2,
+    "version": "1.1.0",
+    "author": "leap",
+    "description": "最小示例：在插件侧边栏加一个入口、在文件菜单加一项，并提供一整页插件设置。"
+}

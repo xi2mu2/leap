@@ -20,6 +20,10 @@ inline constexpr int kDefaultTextLineWidth = 350;
 // 彩虹分支的取色周期：1 级子节点按序号循环使用配色，满 6 个回到第一个颜色。
 inline constexpr int kRainbowBranchPeriod = 6;
 
+// 分支配色挑选字色时的最低对比度（WCAG 相对值）。
+// 用户明确要求按 2:1 执行：色彩方案优先，不再为了凑 4.5:1 把字压成深色。
+inline constexpr qreal kMinBranchTextContrast = 2.0;
+
 struct MindMapStyle {
     // 新建文档的默认层级样式见 MindMapLevelStyles；这里是与之外层（更深层节点）一致的基础样式，
     // 同时充当旧文件缺字段时的兜底值。
@@ -218,7 +222,7 @@ struct MindMapRainbowStyle {
     QString paletteName = QStringLiteral("宝石");
     QVector<QColor> colors = defaultColors();
 
-    // 用户逐分支微调过的三色。键 = 分支序号 * 2 + 层级档（0 表示 1 级，1 表示 2 级及更深）。
+    // 用户逐分支微调过的三色。键 = 周期内分支序号 * 2 + 层级档（0 表示 1 级，1 表示 2 级及更深）。
     // 同一分支的 1 级和 2 级是两套颜色（一个饱和、一个浅），所以要分开记。
     // 空表示全部按派生规则算；某个角色没覆盖时仍然派生，这样改了填充也不会把字色弄糊。
     QMap<int, MindMapRainbowBranchStyle> branchStyles;
@@ -230,51 +234,80 @@ struct MindMapRainbowStyle {
                 QColor(0x2E, 0x7D, 0x4F), QColor(0x1F, 0x5F, 0xA8), QColor(0x6B, 0x3F, 0xA0)};
     }
 
+    // 预设色卡给 1 级子节点带的一套统一规则：
+    //   · 边框跟随填充 —— 边框与填充同色，看起来就是干净的纯色块；
+    //   · whiteText 为真时再把字色固定成白色（经典彩虹 / 深靛 / 赤陶 三套，用户指定）。
+    // 键编码跟 MindMapRainbowStyle::branchStyleKey 一致：分支序号 * 2 + 层级档（0 = 1 级）。
+    static QMap<int, MindMapRainbowBranchStyle> firstLevelRules(bool whiteText) {
+        MindMapRainbowBranchStyle rule;
+        rule.hasBorderFollowsFill = true;
+        rule.borderFollowsFill = true;
+        if (whiteText) {
+            rule.hasText = true;
+            rule.textColor = QColor(0xFF, 0xFF, 0xFF);
+        }
+        QMap<int, MindMapRainbowBranchStyle> rules;
+        for (int branch = 0; branch < kRainbowBranchPeriod; ++branch) {
+            rules.insert(branch * 2, rule);
+        }
+        return rules;
+    }
+
+    static MindMapRainbowPalette preset(const QString& name, const QVector<QColor>& colors,
+                                        bool whiteText = false) {
+        return MindMapRainbowPalette{name, colors, true, firstLevelRules(whiteText)};
+    }
+
     // 预设配色方案，共 14 套：前 10 套对应常见的"配色性格"（供按风格挑），
     // 后 4 套是项目自己配的明度/冷暖区间（宝石为默认）。
     // 色值来源：open-color（MIT）的色阶 + CIELAB 规则生成，选哪六个、怎么排序由本项目决定。
     static QVector<MindMapRainbowPalette> presets() {
         return {
-            {QStringLiteral("宝石"), defaultColors()},
-            {QStringLiteral("经典彩虹"),
-             {QColor(0xF0, 0x3E, 0x3E), QColor(0xFD, 0x7E, 0x14), QColor(0xFC, 0xC4, 0x19),
-              QColor(0x40, 0xC0, 0x57), QColor(0x22, 0x8B, 0xE6), QColor(0xBE, 0x4B, 0xDB)}},
-            {QStringLiteral("暖橙青紫"),
-             {QColor(0xF7, 0x67, 0x07), QColor(0xF5, 0x9F, 0x00), QColor(0xE6, 0x49, 0x80),
-              QColor(0x0C, 0xA6, 0x78), QColor(0x5C, 0x7C, 0xFA), QColor(0x9C, 0x36, 0xB5)}},
-            {QStringLiteral("粉橙深红"),
-             {QColor(0xFC, 0xC2, 0xD7), QColor(0xFF, 0xC0, 0x78), QColor(0xFF, 0xE0, 0x66),
-              QColor(0xF0, 0x3E, 0x3E), QColor(0xE8, 0x59, 0x0C), QColor(0xC2, 0x25, 0x5C)}},
-            {QStringLiteral("单色蓝渐变"),
-             {QColor(0xE7, 0xF5, 0xFF), QColor(0xA5, 0xD8, 0xFF), QColor(0x74, 0xC0, 0xFC),
-              QColor(0x33, 0x9A, 0xF0), QColor(0x1C, 0x7E, 0xD6), QColor(0x18, 0x64, 0xAB)}},
-            {QStringLiteral("马卡龙淡彩"),
-             {QColor(0xFD, 0xCA, 0xD8), QColor(0xAF, 0xFA, 0xFF), QColor(0xEE, 0xDB, 0xAF),
-              QColor(0xCC, 0xD5, 0xFF), QColor(0xB6, 0xE2, 0xC0), QColor(0xFF, 0xE8, 0xDE)}},
-            {QStringLiteral("大地色"),
-             {QColor(0x6D, 0x4C, 0x41), QColor(0xA1, 0x88, 0x7F), QColor(0xD7, 0xCC, 0xC8),
-              QColor(0x8D, 0x94, 0x40), QColor(0x5F, 0x71, 0x61), QColor(0xC9, 0xA2, 0x27)}},
-            {QStringLiteral("宝石深色"),
-             {QColor(0x16, 0x37, 0x6B), QColor(0x3B, 0x2E, 0x76), QColor(0x6B, 0x2A, 0x72),
-              QColor(0x96, 0x20, 0x5A), QColor(0xB3, 0x2B, 0x2B), QColor(0x0B, 0x5E, 0x4F)}},
-            {QStringLiteral("粉蓝撞色"),
-             {QColor(0xFF, 0x6B, 0x6B), QColor(0xFF, 0xA9, 0x4D), QColor(0xF0, 0x65, 0x95),
-              QColor(0x22, 0xB8, 0xCF), QColor(0x33, 0x9A, 0xF0), QColor(0x20, 0xC9, 0x97)}},
-            {QStringLiteral("莫兰迪"),
-             {QColor(0xAB, 0x9E, 0x91), QColor(0x69, 0x87, 0x86), QColor(0xA9, 0xC6, 0xCF),
-              QColor(0x89, 0x7D, 0x8F), QColor(0xC9, 0xBD, 0xCF), QColor(0xBE, 0xC3, 0xAF)}},
-            {QStringLiteral("深靛"),
-             {QColor(0x0B, 0x72, 0x85), QColor(0x08, 0x7F, 0x5B), QColor(0x1C, 0x7E, 0xD6),
-              QColor(0x5F, 0x3D, 0xC4), QColor(0x9C, 0x36, 0xB5), QColor(0xC2, 0x25, 0x5C)}},
-            {QStringLiteral("赤陶"),
-             {QColor(0xC9, 0x2A, 0x2A), QColor(0xD9, 0x48, 0x0F), QColor(0xE6, 0x77, 0x00),
-              QColor(0x5C, 0x94, 0x0D), QColor(0xA6, 0x1E, 0x4D), QColor(0x86, 0x2E, 0x9C)}},
-            {QStringLiteral("秋林"),
-             {QColor(0xFA, 0x52, 0x52), QColor(0xFD, 0x7E, 0x14), QColor(0xFA, 0xB0, 0x05),
-              QColor(0x82, 0xC9, 0x1E), QColor(0x40, 0xC0, 0x57), QColor(0x12, 0xB8, 0x86)}},
-            {QStringLiteral("晨光"),
-             {QColor(0xF0, 0x65, 0x95), QColor(0xBE, 0x4B, 0xDB), QColor(0x79, 0x50, 0xF2),
-              QColor(0x22, 0xB8, 0xCF), QColor(0x20, 0xC9, 0x97), QColor(0x82, 0xC9, 0x1E)}},
+            preset(QStringLiteral("宝石"), defaultColors()),
+            preset(QStringLiteral("经典彩虹"),
+                   {QColor(0xF0, 0x3E, 0x3E), QColor(0xFD, 0x7E, 0x14), QColor(0xFC, 0xC4, 0x19),
+                    QColor(0x40, 0xC0, 0x57), QColor(0x22, 0x8B, 0xE6), QColor(0xBE, 0x4B, 0xDB)},
+                   true),
+            preset(QStringLiteral("暖橙青紫"),
+                   {QColor(0xF7, 0x67, 0x07), QColor(0xF5, 0x9F, 0x00), QColor(0xE6, 0x49, 0x80),
+                    QColor(0x0C, 0xA6, 0x78), QColor(0x5C, 0x7C, 0xFA), QColor(0x9C, 0x36, 0xB5)}),
+            preset(QStringLiteral("粉橙深红"),
+                   {QColor(0xFC, 0xC2, 0xD7), QColor(0xFF, 0xC0, 0x78), QColor(0xFF, 0xE0, 0x66),
+                    QColor(0xF0, 0x3E, 0x3E), QColor(0xE8, 0x59, 0x0C), QColor(0xC2, 0x25, 0x5C)}),
+            // 原来第 1 个是 #E7F5FF（几乎和白底同色，与后面的蓝完全脱节），
+            // 现在整体前移一位，第 6 个补一个更深的蓝把渐变收口。
+            preset(QStringLiteral("单色蓝渐变"),
+                   {QColor(0xA5, 0xD8, 0xFF), QColor(0x74, 0xC0, 0xFC), QColor(0x33, 0x9A, 0xF0),
+                    QColor(0x1C, 0x7E, 0xD6), QColor(0x18, 0x64, 0xAB), QColor(0x10, 0x41, 0x6F)}),
+            preset(QStringLiteral("马卡龙淡彩"),
+                   {QColor(0xFD, 0xCA, 0xD8), QColor(0xAF, 0xFA, 0xFF), QColor(0xEE, 0xDB, 0xAF),
+                    QColor(0xCC, 0xD5, 0xFF), QColor(0xB6, 0xE2, 0xC0), QColor(0xFF, 0xE8, 0xDE)}),
+            preset(QStringLiteral("大地色"),
+                   {QColor(0x6D, 0x4C, 0x41), QColor(0xA1, 0x88, 0x7F), QColor(0xD7, 0xCC, 0xC8),
+                    QColor(0x8D, 0x94, 0x40), QColor(0x5F, 0x71, 0x61), QColor(0xC9, 0xA2, 0x27)}),
+            preset(QStringLiteral("宝石深色"),
+                   {QColor(0x16, 0x37, 0x6B), QColor(0x3B, 0x2E, 0x76), QColor(0x6B, 0x2A, 0x72),
+                    QColor(0x96, 0x20, 0x5A), QColor(0xB3, 0x2B, 0x2B), QColor(0x0B, 0x5E, 0x4F)}),
+            preset(QStringLiteral("粉蓝撞色"),
+                   {QColor(0xFF, 0x6B, 0x6B), QColor(0xFF, 0xA9, 0x4D), QColor(0xF0, 0x65, 0x95),
+                    QColor(0x22, 0xB8, 0xCF), QColor(0x33, 0x9A, 0xF0), QColor(0x20, 0xC9, 0x97)}),
+            preset(QStringLiteral("莫兰迪"),
+                   {QColor(0xAB, 0x9E, 0x91), QColor(0x69, 0x87, 0x86), QColor(0xA9, 0xC6, 0xCF),
+                    QColor(0x89, 0x7D, 0x8F), QColor(0xC9, 0xBD, 0xCF), QColor(0xBE, 0xC3, 0xAF)}),
+            preset(QStringLiteral("深靛"),
+                   {QColor(0x0B, 0x72, 0x85), QColor(0x08, 0x7F, 0x5B), QColor(0x1C, 0x7E, 0xD6),
+                    QColor(0x5F, 0x3D, 0xC4), QColor(0x9C, 0x36, 0xB5), QColor(0xC2, 0x25, 0x5C)},
+                   true),
+            preset(QStringLiteral("赤陶"),
+                   {QColor(0xC9, 0x2A, 0x2A), QColor(0xD9, 0x48, 0x0F), QColor(0xE6, 0x77, 0x00),
+                    QColor(0x5C, 0x94, 0x0D), QColor(0xA6, 0x1E, 0x4D), QColor(0x86, 0x2E, 0x9C)},
+                   true),
+            preset(QStringLiteral("秋林"),
+                   {QColor(0xFA, 0x52, 0x52), QColor(0xFD, 0x7E, 0x14), QColor(0xFA, 0xB0, 0x05),
+                    QColor(0x82, 0xC9, 0x1E), QColor(0x40, 0xC0, 0x57), QColor(0x12, 0xB8, 0x86)}),
+            preset(QStringLiteral("晨光"),
+                   {QColor(0xF0, 0x65, 0x95), QColor(0xBE, 0x4B, 0xDB), QColor(0x79, 0x50, 0xF2),
+                    QColor(0x22, 0xB8, 0xCF), QColor(0x20, 0xC9, 0x97), QColor(0x82, 0xC9, 0x1E)}),
         };
     }
 
@@ -310,9 +343,11 @@ struct MindMapRainbowStyle {
         return (qMax(la, lb) + 0.05) / (qMin(la, lb) + 0.05);
     }
 
-    // 白字和压深字里挑对比度更高的一个：亮色分支（例如「秋林」的亮黄）配白字会糊掉。
+    // 1 级（饱和底）上的字色：白字优先，白字达不到 kMinBranchTextContrast 才换成压深的同色系字。
+    // 阈值放宽到 2:1 之后，绝大多数分支都会拿到白字，只有亮黄、极浅蓝这类特别亮的底色才会退回深字。
     static QColor readableTextOn(const QColor& background) {
         const QColor white(0xFF, 0xFF, 0xFF);
+        if (contrastRatio(background, white) >= kMinBranchTextContrast) return white;
         const QColor dark = mix(background, QColor(0, 0, 0), 0.88);
         return contrastRatio(background, dark) > contrastRatio(background, white) ? dark : white;
     }
@@ -324,32 +359,39 @@ struct MindMapRainbowStyle {
         QColor candidate = mix(tint, black, 0.45);
         for (qreal amount = 0.45; amount <= 0.95; amount += 0.05) {
             candidate = mix(tint, black, amount);
-            if (contrastRatio(background, candidate) >= 4.5) return candidate;
+            if (contrastRatio(background, candidate) >= kMinBranchTextContrast) return candidate;
         }
         return candidate;
     }
 
-    // 序号超过周期后回到开头的颜色；负序号同样按周期折回。
-    QColor colorForBranch(int branchIndex) const {
+    // 分支序号超过周期后回到开头。取色和取"用户微调过的三色"必须用同一个序号，
+    // 否则第 7 个分支拿到的是第 1 个分支的基础色、却查不到第 1 个分支的覆盖。
+    int wrappedBranchIndex(int branchIndex) const {
         const int period = colors.isEmpty() ? 0 : colors.size();
-        if (period <= 0) return QColor();
-        const int index = ((branchIndex % period) + period) % period;
-        return colors.at(index);
+        if (period <= 0) return 0;
+        return ((branchIndex % period) + period) % period;
     }
 
-    // 分支覆盖在表里的键：分支序号 × 2 + 层级档（1 级为 0，2 级及更深为 1）。
+    // 序号超过周期后回到开头的颜色；负序号同样按周期折回。
+    QColor colorForBranch(int branchIndex) const {
+        if (colors.isEmpty()) return QColor();
+        return colors.at(wrappedBranchIndex(branchIndex));
+    }
+
+    // 分支覆盖在表里的键：周期内分支序号 × 2 + 层级档（1 级为 0，2 级及更深为 1）。
+    // 注意传进来的必须是 wrappedBranchIndex() 之后的值，第 7 个分支和第 1 个分支共用一份覆盖。
     static int branchStyleKey(int branchIndex, int level) {
         return branchIndex * 2 + (level <= 1 ? 0 : 1);
     }
 
     // 取某个分支某档层级的三色覆盖；没有则返回空覆盖（全部角色都走派生）。
     MindMapRainbowBranchStyle branchStyle(int branchIndex, int level) const {
-        return branchStyles.value(branchStyleKey(branchIndex, level));
+        return branchStyles.value(branchStyleKey(wrappedBranchIndex(branchIndex), level));
     }
 
     // 写入覆盖；三个角色都为空的覆盖直接丢掉，避免留下"占位但没改过"的垃圾键。
     void setBranchStyle(int branchIndex, int level, const MindMapRainbowBranchStyle& style) {
-        const int key = branchStyleKey(branchIndex, level);
+        const int key = branchStyleKey(wrappedBranchIndex(branchIndex), level);
         if (style.isEmpty()) {
             branchStyles.remove(key);
         } else {
